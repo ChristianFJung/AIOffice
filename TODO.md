@@ -53,6 +53,23 @@
 - [ ] Keyboard shortcut to cycle between agents
 - [ ] Agent activity log/history view
 
+## Chat UX
+
+- [ ] Auto-scroll chat to bottom on new messages
+- [ ] Make chat panel larger
+- [ ] Multiline text input for chat
+- [ ] Thinking icon / loader in chat while agent is processing
+
+## Agent Management
+
+- [ ] Ability to open Claude Code or GitHub Copilot CLI directly from agent
+- [ ] Build "Add Agent" form into the app more natively. walk up somewhere and do it
+- [ ] Number keys (1-9) to jump directly into chat with an agent
+
+## Windows Support
+
+- [ ] Support both `\` and `/` slashes for file paths
+
 ## Cleanup
 
 - [ ] Decide: keep or remove `apps/cli-bridge/`?

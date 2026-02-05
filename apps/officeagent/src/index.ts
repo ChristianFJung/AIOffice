@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from "child_process";
 import WebSocket from "ws";
+import * as os from "os";
+import * as path from "path";
 
 // Random name generator
 const adjectives = ["Swift", "Clever", "Brave", "Calm", "Eager", "Fancy", "Jolly", "Lucky", "Noble", "Quick", "Sharp", "Witty", "Zen", "Bold", "Cool"];
@@ -94,6 +96,7 @@ class OfficeAgent {
   private ws: WebSocket | null = null;
   private isBusy = false;
   private processedMessages = new Set<string>();
+  private configDir: string;
 
   constructor(name: string, cliType: string, serverUrl: string, personality: string = "") {
     this.agentId = `agent-${Date.now()}-${Math.random().toString(36).substring(7)}`;
@@ -103,6 +106,8 @@ class OfficeAgent {
     this.workingDirectory = process.cwd();
     this.serverUrl = serverUrl;
     this.wsUrl = serverUrl.replace("http", "ws") + "/ws";
+    // Each agent gets its own config directory to isolate conversation history
+    this.configDir = path.join(os.tmpdir(), "officeagent", this.agentId);
   }
 
   async start(): Promise<void> {
@@ -242,9 +247,6 @@ class OfficeAgent {
 
   private runCLI(message: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      let command: string;
-      let args: string[];
-
       // Add nickname context on first message or after reset
       let prompt = message;
       const wasFirstMessage = this.isFirstMessage;
@@ -272,20 +274,33 @@ Let's get to work.
       const shouldContinue = !this.skipContinue && !wasFirstMessage;
       this.skipContinue = false; // Reset for next message
 
+      // Escape prompt for shell execution
+      // Handle Windows shell escaping: escape quotes, backslashes, and special chars
+      const escapedPrompt = prompt
+        .replace(/\\/g, '\\\\')     // Escape backslashes first
+        .replace(/"/g, '\\"')        // Escape double quotes
+        .replace(/\n/g, ' ')         // Replace newlines with spaces (safer for shell)
+        .replace(/\r/g, '')          // Remove carriage returns
+        .replace(/`/g, '\\`')        // Escape backticks
+        .replace(/\$/g, '\\$');      // Escape dollar signs
+      
+      let fullCommand: string;
       if (this.cliType === "copilot-cli") {
-        command = "copilot";
-        args = ["-p", prompt, "--allow-all", "--silent"];
-        if (shouldContinue) args.splice(2, 0, "--continue");
+        const continueFlag = shouldContinue ? "--continue " : "";
+        // Use per-agent config directory to isolate conversation history
+        // Escape the config dir path for Windows shells
+        const escapedConfigDir = this.configDir.replace(/\\/g, '/');
+        fullCommand = `copilot --config-dir "${escapedConfigDir}" -p "${escapedPrompt}" ${continueFlag}--allow-all --silent`;
       } else {
-        command = "claude";
-        args = ["-p", prompt, "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"];
-        if (shouldContinue) args.splice(2, 0, "--continue");
+        const continueFlag = shouldContinue ? "--continue " : "";
+        fullCommand = `claude -p "${escapedPrompt}" ${continueFlag}--dangerously-skip-permissions --output-format stream-json --verbose`;
       }
 
-      const child = spawn(command, args, {
+      const child = spawn(fullCommand, [], {
         cwd: this.workingDirectory,
         env: { ...process.env, CI: "true", TERM: "xterm-256color" },
         stdio: ["ignore", "pipe", "pipe"],
+        shell: true, // Required for Windows to find CLI commands
       });
 
       let stdout = "";
