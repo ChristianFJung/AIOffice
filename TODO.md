@@ -56,7 +56,7 @@
 
 ## Chat UX
 
-- [ ] Auto-scroll chat to bottom on new messages
+- [x] Auto-scroll chat to bottom on new messages
 - [ ] Make chat panel larger
 - [ ] Multiline text input for chat
 - [ ] Thinking icon / loader in chat while agent is processing
@@ -65,7 +65,7 @@
 
 - [ ] Ability to open Claude Code or GitHub Copilot CLI directly from agent
 - [ ] Build "Add Agent" form into the app more natively. walk up somewhere and do it
-- [ ] Number keys (1-9) to jump directly into chat with an agent
+- [x] Number keys (1-9) to jump directly into chat with an agent
 
 ## Windows Support
 

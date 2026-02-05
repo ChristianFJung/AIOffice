@@ -231,6 +231,9 @@ function renderPanel() {
     panelMessages.appendChild(div);
   });
 
+  // Auto-scroll to bottom
+  panelMessages.scrollTop = panelMessages.scrollHeight;
+
   scene.setSelectedAgent(currentAgentId);
 }
 
@@ -325,6 +328,16 @@ document.addEventListener("keydown", (event) => {
       closePanel();
     } else {
       openPanel(nearbyAgentId, true);
+    }
+  }
+
+  // Number keys 1-9 to jump to agents
+  const num = parseInt(event.key);
+  if (num >= 1 && num <= 9 && agents.length > 0) {
+    const index = num - 1;
+    if (index < agents.length) {
+      event.preventDefault();
+      openPanel(agents[index].agentId, true);
     }
   }
 });
