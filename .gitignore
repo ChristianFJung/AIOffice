@@ -36,3 +36,5 @@ Thumbs.db
 
 # Test projects
 testApp/
+test-workspace/
+test-results/

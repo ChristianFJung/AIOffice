@@ -1,5 +1,8 @@
 import Phaser from "phaser";
 import { marked } from "marked";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import { OfficeScene, type AgentView } from "./game";
 import { EventEnvelopeSchema, validatePayload, type EventEnvelope } from "@office/shared";
 
@@ -16,7 +19,7 @@ const scene = new OfficeScene();
 const TYPING_JITTER_ENABLED = true;
 scene.setTypingJitterEnabled(TYPING_JITTER_ENABLED);
 
-const sidebarWidth = 360;
+let sidebarWidth = 360;
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   parent: "game-container",
@@ -38,9 +41,14 @@ const config: Phaser.Types.Core.GameConfig = {
 
 const game = new Phaser.Game(config);
 
-window.addEventListener("resize", () => {
+function resizeGame() {
   game.scale.resize(window.innerWidth - sidebarWidth, window.innerHeight);
-});
+  if (terminalFitAddon && panelMode === "terminal") {
+    terminalFitAddon.fit();
+  }
+}
+
+window.addEventListener("resize", resizeGame);
 
 const uiPanel = document.getElementById("ui-panel") as HTMLDivElement;
 const panelTitle = document.getElementById("panel-title") as HTMLSpanElement;
@@ -59,6 +67,16 @@ const topBannerClose = document.getElementById("top-banner-close") as HTMLButton
 const audioEl = document.getElementById("bgm") as HTMLAudioElement;
 const audioPlay = document.getElementById("audio-play") as HTMLButtonElement;
 const audioPause = document.getElementById("audio-pause") as HTMLButtonElement;
+
+// Terminal state
+const panelTabs = document.getElementById("panel-tabs") as HTMLDivElement;
+const tabChat = document.getElementById("tab-chat") as HTMLButtonElement;
+const tabTerminal = document.getElementById("tab-terminal") as HTMLButtonElement;
+const terminalContainer = document.getElementById("terminal-container") as HTMLDivElement;
+let panelMode: "chat" | "terminal" = "chat";
+let terminalInstance: Terminal | null = null;
+let terminalFitAddon: FitAddon | null = null;
+let terminalSocket: WebSocket | null = null;
 
 let agents: AgentView[] = [];
 let tasks: Array<{ taskId: string; agentId: string; title: string; details?: string }> = [];
@@ -237,8 +255,144 @@ function renderPanel() {
   scene.setSelectedAgent(currentAgentId);
 }
 
+// --- Terminal mode logic ---
+
+function connectTerminal(agentId: string) {
+  disconnectTerminal();
+
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: '"SF Mono", "Fira Code", "Cascadia Code", monospace',
+    theme: {
+      background: "#000000",
+      foreground: "#e8e2d6",
+      cursor: "#d9a441",
+      selectionBackground: "rgba(217, 164, 65, 0.3)",
+    },
+    allowProposedApi: true,
+  });
+
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+
+  terminalContainer.innerHTML = "";
+  term.open(terminalContainer);
+
+  // Delay fit to allow DOM layout to settle
+  requestAnimationFrame(() => {
+    fitAddon.fit();
+
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${wsProtocol}//localhost:3003/ws/terminal/${agentId}`);
+
+    ws.addEventListener("open", () => {
+      // Send initial size
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    });
+
+    // Send keyboard input to the PTY
+    term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    });
+
+    ws.addEventListener("message", (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "output") {
+          term.write(msg.data);
+        } else if (msg.type === "exit") {
+          term.write("\r\n\x1b[33m[Process exited]\x1b[0m\r\n");
+        } else if (msg.type === "error") {
+          term.write(`\r\n\x1b[31m${msg.data}\x1b[0m\r\n`);
+        }
+      } catch {
+        // Ignore malformed messages
+      }
+    });
+
+    ws.addEventListener("close", () => {
+      term.write("\r\n\x1b[90m[Disconnected]\x1b[0m\r\n");
+    });
+
+    term.onResize(({ cols, rows }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      }
+    });
+
+    terminalInstance = term;
+    terminalFitAddon = fitAddon;
+    terminalSocket = ws;
+
+    // Focus terminal so keystrokes go to xterm, not the hidden chat input
+    term.focus();
+  });
+}
+
+function disconnectTerminal() {
+  if (terminalSocket) {
+    terminalSocket.close();
+    terminalSocket = null;
+  }
+  if (terminalInstance) {
+    terminalInstance.dispose();
+    terminalInstance = null;
+  }
+  terminalFitAddon = null;
+  terminalContainer.innerHTML = "";
+}
+
+function setPanelMode(mode: "chat" | "terminal") {
+  panelMode = mode;
+
+  // Toggle active tab
+  tabChat.classList.toggle("active", mode === "chat");
+  tabTerminal.classList.toggle("active", mode === "terminal");
+
+  // Show/hide content areas
+  const chatElements = [panelMessages, document.querySelector(".panel-chat-input") as HTMLElement];
+  if (mode === "chat") {
+    chatElements.forEach((el) => el?.classList.remove("hidden"));
+    terminalContainer.classList.add("hidden");
+    uiPanel.classList.remove("terminal-mode");
+    sidebarWidth = 360;
+    disconnectTerminal();
+    chatInput.focus();
+  } else {
+    chatElements.forEach((el) => el?.classList.add("hidden"));
+    chatInput.blur(); // Release focus so keys go to xterm, not hidden input
+    terminalContainer.classList.remove("hidden");
+    uiPanel.classList.add("terminal-mode");
+    sidebarWidth = 560;
+    if (currentAgentId) {
+      connectTerminal(currentAgentId);
+    }
+  }
+
+  resizeGame();
+}
+
+tabChat.addEventListener("click", () => setPanelMode("chat"));
+tabTerminal.addEventListener("click", () => setPanelMode("terminal"));
+
+// Stop terminal keydown events from bubbling up to Phaser's global handler
+// (Phaser captures space/arrows and calls preventDefault, which breaks xterm input)
+terminalContainer.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    event.stopPropagation();
+  }
+});
+
 function openPanel(agentId: string, deferFocus = false) {
   currentAgentId = agentId;
+  panelTabs.classList.remove("hidden");
+  // Default to chat mode when opening a new agent
+  if (panelMode === "terminal") {
+    setPanelMode("chat");
+  }
   renderPanel();
   if (deferFocus) {
     setTimeout(() => chatInput.focus(), 0);
@@ -267,6 +421,20 @@ function openPanel(agentId: string, deferFocus = false) {
 
 function closePanel() {
   currentAgentId = null;
+  panelTabs.classList.add("hidden");
+  disconnectTerminal();
+  if (panelMode === "terminal") {
+    // Reset to chat mode without triggering connect
+    panelMode = "chat";
+    tabChat.classList.add("active");
+    tabTerminal.classList.remove("active");
+    terminalContainer.classList.add("hidden");
+    (document.querySelector(".panel-chat-input") as HTMLElement)?.classList.remove("hidden");
+    panelMessages.classList.remove("hidden");
+    uiPanel.classList.remove("terminal-mode");
+    sidebarWidth = 360;
+    resizeGame();
+  }
   renderPanel();
   scene.lockInput(false);
 }
@@ -306,15 +474,33 @@ panelDelete.addEventListener("click", async () => {
   }
 });
 
-document.addEventListener("keydown", (event) => {
+window.addEventListener("keydown", (event) => {
+  const active = document.activeElement as HTMLElement | null;
+  const isInChatInput = active === chatInput;
+
   if (event.key === "Escape") {
     closePanel();
     return;
   }
-  const active = document.activeElement as HTMLElement | null;
-  const isTyping =
-    active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA");
-  if (isTyping) {
+
+  // When terminal mode is active, let ALL keys pass through to xterm
+  if (panelMode === "terminal" && currentAgentId) {
+    return;
+  }
+
+  // Number keys 1-9 to jump to agents (only when not typing in chat input)
+  const num = parseInt(event.key);
+  if (!isInChatInput && num >= 1 && num <= 9 && agents.length > 0) {
+    const index = num - 1;
+    if (index < agents.length) {
+      event.preventDefault();
+      event.stopPropagation();
+      openPanel(agents[index].agentId, true);
+      return;
+    }
+  }
+
+  if (isInChatInput) {
     return;
   }
   if (currentAgentId && event.code === "Space") {
@@ -330,17 +516,7 @@ document.addEventListener("keydown", (event) => {
       openPanel(nearbyAgentId, true);
     }
   }
-
-  // Number keys 1-9 to jump to agents
-  const num = parseInt(event.key);
-  if (num >= 1 && num <= 9 && agents.length > 0) {
-    const index = num - 1;
-    if (index < agents.length) {
-      event.preventDefault();
-      openPanel(agents[index].agentId, true);
-    }
-  }
-});
+}, true); // Capture phase - fires before Phaser
 
 chatSend.addEventListener("click", async () => {
   if (!currentAgentId || !chatInput.value.trim()) return;

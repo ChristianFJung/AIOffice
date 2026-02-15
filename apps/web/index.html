@@ -24,11 +24,16 @@
             <button id="panel-close" class="panel-close" aria-label="Close">Esc</button>
           </div>
         </div>
+        <div id="panel-tabs" class="panel-tabs hidden">
+          <button id="tab-chat" class="panel-tab active">Chat</button>
+          <button id="tab-terminal" class="panel-tab">Terminal</button>
+        </div>
         <div id="panel-empty" class="panel-empty hidden">
           <div class="panel-empty-title">Chat not active</div>
           <div class="panel-empty-subtitle">Walk up to an agent and press E.</div>
         </div>
         <div id="panel-messages" class="panel-messages panel-chat"></div>
+        <div id="terminal-container" class="terminal-container hidden"></div>
         <div class="panel-chat-input">
           <input id="chat-input" type="text" placeholder="Message this agent..." />
           <button id="chat-send" class="panel-send">Send</button>

@@ -66,14 +66,19 @@ body {
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   z-index: 6;
   box-shadow: -10px 0 30px rgba(0, 0, 0, 0.35);
+  transition: width 0.2s ease;
+}
+
+.panel.terminal-mode {
+  width: 560px;
 }
 
 .panel.hidden {
-  display: none;
+  display: none !important;
 }
 
 .hidden {
-  display: none;
+  display: none !important;
 }
 
 .panel.sidebar {
@@ -618,4 +623,43 @@ body {
   font-size: 11px;
   word-break: break-all;
   color: #fff;
+}
+
+/* Panel Tabs */
+.panel-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0;
+}
+
+.panel-tab {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.panel-tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.panel-tab.active {
+  background: rgba(217, 164, 65, 0.2);
+  border-color: rgba(217, 164, 65, 0.5);
+  color: #d9a441;
+}
+
+/* Terminal Container */
+.terminal-container {
+  flex: 1;
+  overflow: hidden;
+  background: #000;
+  border-radius: 8px;
 }

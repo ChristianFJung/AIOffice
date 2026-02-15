@@ -293,7 +293,7 @@ Let's get to work.
         fullCommand = `copilot --config-dir "${escapedConfigDir}" -p "${escapedPrompt}" ${continueFlag}--allow-all --silent`;
       } else {
         const continueFlag = shouldContinue ? "--continue " : "";
-        fullCommand = `claude -p "${escapedPrompt}" ${continueFlag}--dangerously-skip-permissions --output-format stream-json --verbose`;
+        fullCommand = `claude -p "${escapedPrompt}" ${continueFlag}--dangerously-skip-permissions`;
       }
 
       const child = spawn(fullCommand, [], {
@@ -311,24 +311,18 @@ Let's get to work.
         const text = data.toString();
         stdout += text;
 
-        if (this.cliType === "copilot-cli") {
-          result = stdout.trim();
-        } else {
-          // Parse Claude stream-json
-          for (const line of text.split("\n")) {
-            if (!line.trim()) continue;
-            try {
-              const json = JSON.parse(line);
-              if (json.type === "result" && json.result) {
-                result = json.result;
-              }
-            } catch {}
-          }
-        }
+        // Tee raw output to our stdout so it flows through the PTY
+        // This makes the terminal tab show the real claude output
+        process.stdout.write(data);
+
+        // For both CLI types, the plain text output is the result
+        result = stdout.trim();
       });
 
       child.stderr?.on("data", (data) => {
         stderr += data.toString();
+        // Also tee stderr
+        process.stderr.write(data);
       });
 
       child.on("error", reject);

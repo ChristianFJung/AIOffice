@@ -19,5 +19,9 @@
     "build:web": "npm --workspace apps/web run build",
     "build:bridge": "npm --workspace apps/cli-bridge run build",
     "agent": "npx tsx apps/officeagent/src/index.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "playwright": "^1.58.2"
   }
 }
