@@ -1,0 +1,9 @@
+{
+  "name": "world-clock",
+  "version": "0.1.0",
+  "description": "A CLI tool to display the current time across multiple timezones",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  }
+}

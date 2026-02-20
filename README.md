@@ -1,134 +1,109 @@
-# Office Agent World
+<div align="center">
 
-A cozy pixel-art virtual office where AI agents work alongside you — each with their own desk, personality, and expertise.
+![AIOffice](demo/banner.svg)
 
-Instead of staring at terminal output, watch your AI coworkers at their desks. Walk up, chat, assign tasks, and see them think through problems in real-time.
+**You're the boss. Claude and Copilot are your employees.**
+**Give them desks, assign them work, and watch them build — in a pixel-art office.**
 
-<!-- TODO: Add screenshot/GIF here -->
+<img src="demo/hero.gif" alt="AIOffice — walk around, chat with AI agents, watch them code" width="100%">
 
-## Why I built this
+[Getting Started](#try-it-now) · [Features](#features) · [CLI](#cli) · [Architecture](docs/ARCHITECTURE.md)
 
-Lately, AI agents do about 90% of my coding. But I kept hitting a wall: **I can't manage more than 2-3 parallel tasks in my head.** Terminal tabs blur together. Which Claude session was working on the auth bug? Which one was refactoring the API?
+</div>
 
-I wanted **visual separation**. A way to glance at my screen and instantly know: who's working on what, who's stuck, who just finished.
+---
 
-So I built a virtual office. Now each task gets a coworker at a desk. I can see them thinking, walk over to chat, and context-switch without losing my mind.
+## Try it now
 
-## What is this?
-
-Spin up AI agents powered by **Claude Code** or **GitHub Copilot CLI**. Each agent gets:
-- A desk in the pixel-art office
-- A name and personality you define
-- Their own working directory (your projects)
-- A chat interface for continuous conversation
-
-Walk your character around the office, press E to chat with an agent, and collaborate like coworkers.
-
-## Quick Start
+<img src="demo/demo.gif" alt="officeagent demo — CLI detection and agent spawning" width="600">
 
 ```bash
-# Clone and install
-git clone https://github.com/yourusername/office-agent-world.git
-cd office-agent-world
-npm install
+git clone https://github.com/ChristianFJung/AIOffice
+cd AIOffice
+npm i
+officeagent demo
+```
 
-# Start the server and UI
-npm run dev:server &
-npm run dev:web
+> Open **http://localhost:3000** — your office is ready. Walk around, assign tasks, be the boss.
 
-# Open http://localhost:3001
+## Features
+
+- 🏢 **Your office** — a walkable pixel-art map where each agent gets a desk
+- 🤖 **Real AI agents** — Claude Code and Copilot CLI, doing real work
+- 💬 **Walk up and chat** — talk to any agent like an NPC
+- 🖥️ **Terminal view** — peek over their shoulder and see what they're typing
+- 🔄 **Hire and fire** — spawn, reset, and delete agents on the fly
+- 🎵 **Vibes** — lo-fi office background music
+- ⌨️ **CLI tool** — script your whole team from the terminal
+
+## How It Works
+
+Each agent is a real CLI process (Claude Code or Copilot) running in a PTY. The server watches JSONL output for responses, bridges messages over WebSocket, and Phaser renders it all as a cozy pixel-art office. See [Architecture →](docs/ARCHITECTURE.md)
+
+## CLI
+
+```bash
+officeagent start                        # Launch the office
+officeagent spawn                        # Add a Claude agent
+officeagent spawn -n "Bob" -c copilot    # Named Copilot agent
+officeagent demo                         # Auto-detect CLIs, full demo
 ```
 
 ## Adding Agents
 
-### Option 1: From the UI
-Click the green **+** button in the bottom left, fill in:
-- **Name** — or leave blank for a random one
-- **CLI Type** — Claude Code or Copilot
-- **Working Directory** — full path to your project
-- **Personality** — optional, e.g. "Grumpy senior engineer who's seen it all"
+**From the UI** — click **+**, fill in name, CLI type, working directory, and personality.
 
-### Option 2: From the terminal
+**From the terminal:**
 ```bash
-cd /path/to/your/project
-officeagent --name "Ruby" --cli copilot --personality "Enthusiastic junior dev"
-```
-
-Or add the script to your PATH:
-```bash
-export PATH="$PATH:/path/to/office-agent-world/apps/officeagent"
-```
-
-## How It Works
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  Office Agent World UI                      │
-│            Phaser game + chat sidebar                       │
-└─────────────────────────────────────────────────────────────┘
-                            ▲
-                            │ WebSocket
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Server (port 3003)                       │
-│              Tracks agents, routes messages                 │
-└─────────────────────────────────────────────────────────────┘
-                            ▲
-                            │ WebSocket + HTTP
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   officeagent processes                     │
-│         Each one = 1 CLI + 1 folder + 1 conversation        │
-└─────────────────────────────────────────────────────────────┘
-                            │
-            ┌───────────────┼───────────────┐
-            ▼               ▼               ▼
-      Claude Code     Copilot CLI      (your CLIs)
+officeagent spawn --name "Alice" --dir ~/projects/myapp --cli copilot
 ```
 
 ## Controls
 
 | Key | Action |
 |-----|--------|
-| WASD / Arrows | Move around |
-| E | Open chat with nearby agent |
-| Esc / Space | Close chat |
-
-## Agent Status Colors
-
-| Color | Status |
-|-------|--------|
-| 🟢 Green | Available |
-| 🟡 Yellow | Thinking |
-| 🔵 Blue | Has new reply |
-| 🔴 Red | Error |
-
-## Chat Panel
-
-When chatting with an agent, you'll see:
-- **Provider badge** — Claude or Copilot
-- **+ button** — Start a fresh conversation
-- **× button** — Delete the agent
+| `WASD` / `Arrows` | Move around |
+| `E` / `Enter` | Chat with nearby agent |
+| `Esc` / `Space` | Close panel |
+| `Tab` | Switch Chat ↔ Terminal |
 
 ## Requirements
 
-- Node.js 18+
-- One or both of:
-  - [Claude Code CLI](https://docs.anthropic.com/claude-code)
-  - [GitHub Copilot CLI](https://docs.github.com/copilot/github-copilot-in-the-cli)
+- **Node.js 18+**
+- At least one AI CLI:
+  [Claude Code](https://docs.anthropic.com/en/docs/claude-code) ·
+  [GitHub Copilot CLI](https://docs.github.com/copilot/github-copilot-in-the-cli)
 
-## Project Structure
+## Development
+
+```bash
+npm install
+npm run dev:server    # API + WebSocket on :3003
+npm run dev:web       # Phaser app on :3000
+npm test              # 22 Playwright integration tests
+```
+
+<details>
+<summary>Project structure</summary>
 
 ```
-office-agent-world/
+aioffice/
 ├── apps/
-│   ├── web/           # Phaser game + UI
-│   ├── server/        # WebSocket server
-│   └── officeagent/   # CLI tool to spawn agents
+│   ├── web/           # Phaser 3 game + UI (Vite + TypeScript)
+│   ├── server/        # Express server, PTY management, JSONL bridge
+│   └── officeagent/   # CLI tool (start, spawn, demo)
 ├── shared/            # Shared types and schemas
-└── data/              # Runtime data (gitignored)
+├── demo/              # Demo projects for agents to work on
+├── tests/             # Playwright integration tests
+└── docs/              # Architecture docs
 ```
 
-## License
+</details>
 
-MIT
+---
+
+<div align="center">
+
+[Attribution](ATTRIBUTION.md) · MIT [License](LICENSE)
+
+</div>

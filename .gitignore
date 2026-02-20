@@ -5,16 +5,7 @@ node_modules/
 dist/
 
 # Runtime data
-data/*.json
-data/*.jsonl
-data/*.jpg
-data/people/
-data/PixelOffice/
-data/FREE Pixel Art Characters - Starter Pack/
-data/Free Pixel Character Base Pack/
-
-# Config with personal paths
-apps/cli-bridge/cli-bridge.config.json
+data/
 
 # Environment
 .env
@@ -31,10 +22,9 @@ Thumbs.db
 # Logs
 *.log
 
-# Downloaded assets (keep source sprites, ignore zips)
+# Asset archives
 *.zip
 
-# Test projects
-testApp/
+# Test artifacts
 test-workspace/
 test-results/

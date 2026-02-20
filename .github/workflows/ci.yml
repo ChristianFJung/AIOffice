@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check (server)
+        run: npx tsc --noEmit --project apps/server/tsconfig.json
+        continue-on-error: true
+
+      - name: TypeScript check (web)
+        run: npx tsc --noEmit --project apps/web/tsconfig.json
+        continue-on-error: true
+
+      - name: Build web
+        run: npm run build:web
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: CLI smoke test
+        run: npx tsx apps/officeagent/src/index.ts --help

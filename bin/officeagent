@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Resolve symlinks to find the actual script location
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+ROOT_DIR="${SCRIPT_DIR}/.."
+exec "${ROOT_DIR}/node_modules/.bin/tsx" "${ROOT_DIR}/apps/officeagent/src/index.ts" "$@"

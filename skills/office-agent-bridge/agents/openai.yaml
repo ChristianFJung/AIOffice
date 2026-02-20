@@ -1,4 +1,0 @@
-interface:
-  display_name: "Office Agent Bridge"
-  short_description: "Connect agents to the office control room API."
-  default_prompt: "Connect an agent to the local office control room: register, listen for tasks, and post status/messages to the API."

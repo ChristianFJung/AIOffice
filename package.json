@@ -1,24 +1,28 @@
 {
-  "name": "office-agent-world",
+  "name": "aioffice",
   "version": "0.1.0",
-  "description": "A cozy pixel-art virtual office where AI agents work alongside you — each with their own desk, personality, and expertise.",
+  "description": "A pixel-art virtual office where AI coding agents work at desks — watch Claude and Copilot build software in real-time.",
   "private": true,
+  "bin": {
+    "officeagent": "./bin/officeagent"
+  },
   "workspaces": [
     "apps/web",
     "apps/server",
-    "apps/cli-bridge",
     "apps/officeagent",
     "shared"
   ],
   "scripts": {
-    "dev": "npm run dev:server & npm run dev:web & npm run dev:bridge",
+    "postinstall": "ln -sf ../../bin/officeagent node_modules/.bin/officeagent 2>/dev/null || true",
+    "dev": "npm run dev:server & npm run dev:web",
     "dev:server": "npm --workspace apps/server run dev",
     "dev:web": "npm --workspace apps/web run dev",
-    "dev:bridge": "npm --workspace apps/cli-bridge run dev",
     "build:server": "npm --workspace apps/server run build",
     "build:web": "npm --workspace apps/web run build",
-    "build:bridge": "npm --workspace apps/cli-bridge run build",
-    "agent": "npx tsx apps/officeagent/src/index.ts"
+    "test": "npx playwright test",
+    "agent": "npx tsx apps/officeagent/src/index.ts",
+    "start": "npx tsx apps/officeagent/src/index.ts start",
+    "demo": "npx tsx apps/officeagent/src/index.ts demo"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
