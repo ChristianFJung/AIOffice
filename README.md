@@ -104,6 +104,56 @@ aioffice/
 
 ---
 
+## CLI Reference
+
+### `officeagent start`
+
+Launch the server and web app.
+
+```bash
+officeagent start              # Start both server (:3003) and web (:3000)
+officeagent start --server-only  # Server only
+officeagent start --web-only     # Web app only
+```
+
+### `officeagent spawn`
+
+Spawn an AI agent into the office.
+
+```bash
+officeagent spawn                                          # Claude agent, random name
+officeagent spawn --name "Alice" --cli copilot             # Named Copilot agent
+officeagent spawn -n "Bob" -d ~/projects/myapp             # Custom working directory
+officeagent spawn -n "Grumpy" -p "Sarcastic senior dev"    # With personality
+officeagent spawn --continue                               # Resume previous conversation
+```
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--name` | `-n` | Agent display name | Random |
+| `--cli` | `-c` | `claude` or `copilot` | `claude` |
+| `--dir` | `-d` | Working directory | Current dir |
+| `--personality` | `-p` | Personality description | None |
+| `--continue` | | Resume previous conversation | `false` |
+| `--server` | `-s` | Server URL | `http://localhost:3003` |
+
+### `officeagent demo`
+
+One command to see everything. Detects which AI CLIs you have installed and spawns agents into demo projects.
+
+```bash
+officeagent demo    # Auto-detect CLIs, start world, spawn agents
+```
+
+| You have installed | What happens |
+|---|---|
+| Claude + Copilot | One of each, different demo projects |
+| Only Claude | Two Claude agents |
+| Only Copilot | Two Copilot agents |
+| Neither | Error with install links |
+
+---
+
 <div align="center">
 
 [Attribution](ATTRIBUTION.md) · MIT [License](LICENSE)
