@@ -156,7 +156,8 @@ audioPause.addEventListener("click", () => {
   setAudioState(false);
 });
 
-attemptAutoPlay();
+// Audio starts paused — user clicks play to start
+setAudioState(false);
 
 function setAudioState(isPlaying: boolean) {
   audioPlay.classList.toggle("active", isPlaying);
@@ -164,14 +165,6 @@ function setAudioState(isPlaying: boolean) {
 }
 
 audioEl.addEventListener("ended", () => setAudioState(false));
-
-const resumeAudio = () => {
-  attemptAutoPlay();
-  window.removeEventListener("pointerdown", resumeAudio);
-  window.removeEventListener("keydown", resumeAudio);
-};
-window.addEventListener("pointerdown", resumeAudio);
-window.addEventListener("keydown", resumeAudio);
 
 function renderPanel() {
   if (!currentAgentId) {
@@ -200,10 +193,10 @@ function renderPanel() {
   // Show provider
   const cliType = (agent as any).cliType;
   if (cliType === "claude-code") {
-    panelProvider.textContent = "Claude";
+    panelProvider.textContent = "Claude Code";
     panelProvider.className = "panel-provider claude";
   } else if (cliType === "copilot-cli") {
-    panelProvider.textContent = "Copilot";
+    panelProvider.textContent = "Copilot CLI";
     panelProvider.className = "panel-provider copilot";
   } else {
     panelProvider.textContent = "";
@@ -282,6 +275,8 @@ function connectTerminal(agentId: string) {
   // Delay fit to allow DOM layout to settle
   requestAnimationFrame(() => {
     fitAddon.fit();
+    // Re-fit after CSS width transition completes (200ms)
+    setTimeout(() => fitAddon.fit(), 250);
 
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${wsProtocol}//localhost:3003/ws/terminal/${agentId}`);
@@ -366,7 +361,7 @@ function setPanelMode(mode: "chat" | "terminal") {
     chatInput.blur(); // Release focus so keys go to xterm, not hidden input
     terminalContainer.classList.remove("hidden");
     uiPanel.classList.add("terminal-mode");
-    sidebarWidth = 560;
+    sidebarWidth = Math.floor(window.innerWidth * 0.5);
     if (currentAgentId) {
       connectTerminal(currentAgentId);
     }
@@ -389,15 +384,15 @@ terminalContainer.addEventListener("keydown", (event) => {
 function openPanel(agentId: string, deferFocus = false) {
   currentAgentId = agentId;
   panelTabs.classList.remove("hidden");
-  // Default to chat mode when opening a new agent
-  if (panelMode === "terminal") {
-    setPanelMode("chat");
-  }
+  // Restore last tab mode (chat or terminal)
+  setPanelMode(panelMode);
   renderPanel();
-  if (deferFocus) {
-    setTimeout(() => chatInput.focus(), 0);
-  } else {
-    chatInput.focus();
+  if (panelMode === "chat") {
+    if (deferFocus) {
+      setTimeout(() => chatInput.focus(), 0);
+    } else {
+      chatInput.focus();
+    }
   }
   scene.lockInput(true);
   const agent = agents.find((a) => a.agentId === agentId);
@@ -423,9 +418,8 @@ function closePanel() {
   currentAgentId = null;
   panelTabs.classList.add("hidden");
   disconnectTerminal();
+  // Visually reset to chat layout without changing panelMode (preserves user preference)
   if (panelMode === "terminal") {
-    // Reset to chat mode without triggering connect
-    panelMode = "chat";
     tabChat.classList.add("active");
     tabTerminal.classList.remove("active");
     terminalContainer.classList.add("hidden");
@@ -476,9 +470,14 @@ panelDelete.addEventListener("click", async () => {
 
 window.addEventListener("keydown", (event) => {
   const active = document.activeElement as HTMLElement | null;
-  const isInChatInput = active === chatInput;
+  const isTyping = active?.tagName === "INPUT" || active?.tagName === "TEXTAREA" || active?.tagName === "SELECT";
 
   if (event.key === "Escape") {
+    if (!addAgentModal.classList.contains("hidden")) {
+      addAgentModal.classList.add("hidden");
+      scene.lockInput(false);
+      return;
+    }
     closePanel();
     return;
   }
@@ -488,9 +487,14 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
-  // Number keys 1-9 to jump to agents (only when not typing in chat input)
+  // When typing in any input, let keys pass through
+  if (isTyping) {
+    return;
+  }
+
+  // Number keys 1-9 to jump to agents
   const num = parseInt(event.key);
-  if (!isInChatInput && num >= 1 && num <= 9 && agents.length > 0) {
+  if (num >= 1 && num <= 9 && agents.length > 0) {
     const index = num - 1;
     if (index < agents.length) {
       event.preventDefault();
@@ -500,9 +504,6 @@ window.addEventListener("keydown", (event) => {
     }
   }
 
-  if (isInChatInput) {
-    return;
-  }
   if (currentAgentId && event.code === "Space") {
     event.preventDefault();
     closePanel();
@@ -543,6 +544,7 @@ chatInput.addEventListener("keydown", (event) => {
     chatSend.click();
   }
 });
+chatInput.addEventListener("keyup", (event) => event.stopPropagation());
 
 scene.setProximityHandler((agentId) => {
   nearbyAgentId = agentId;
@@ -642,6 +644,7 @@ const agentNameInput = document.getElementById("agent-name") as HTMLInputElement
 const agentCliSelect = document.getElementById("agent-cli") as HTMLSelectElement;
 const agentDirInput = document.getElementById("agent-dir") as HTMLInputElement;
 const agentPersonalityInput = document.getElementById("agent-personality") as HTMLInputElement;
+const agentContinueCheckbox = document.getElementById("agent-continue") as HTMLInputElement;
 const agentCommandDiv = document.getElementById("agent-command") as HTMLDivElement;
 const agentCommandText = document.getElementById("agent-command-text") as HTMLElement;
 
@@ -666,11 +669,20 @@ function randomDesk(): { x: number; y: number } {
   };
 }
 
+// Stop keys in modal inputs from reaching Phaser
+addAgentModal.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    event.stopPropagation();
+  }
+});
+addAgentModal.addEventListener("keyup", (event) => event.stopPropagation());
+
 addAgentBtn.addEventListener("click", () => {
   addAgentModal.classList.remove("hidden");
   agentNameInput.value = "";
   agentDirInput.value = "";
   agentPersonalityInput.value = "";
+  agentContinueCheckbox.checked = false;
   agentCommandDiv.classList.add("hidden");
   scene.lockInput(true);
 });
@@ -692,6 +704,7 @@ createAgentBtn.addEventListener("click", async () => {
   const cliType = agentCliSelect.value;
   const dir = agentDirInput.value.trim();
   const personality = agentPersonalityInput.value.trim();
+  const continueConversation = agentContinueCheckbox.checked;
 
   if (!dir) {
     alert("Please enter a working directory path");
@@ -711,6 +724,7 @@ createAgentBtn.addEventListener("click", async () => {
         cliType,
         workingDirectory: dir,
         personality: personality || undefined,
+        continueConversation,
       }),
     });
 

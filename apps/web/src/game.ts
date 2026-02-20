@@ -27,6 +27,7 @@ export class OfficeScene extends Phaser.Scene {
   private proximityHandler?: ProximityHandler;
   private activeNearby: string | null = null;
   private selectedAgentId: string | null = null;
+  private selectionRing?: Phaser.GameObjects.Graphics;
   private isReady = false;
   private pendingAgents: AgentView[] | null = null;
   private agentSpriteKeys = ["person-boy-a", "person-boy-b", "person-boy-c", "person-girl-d", "person-girl-e"];
@@ -60,6 +61,7 @@ export class OfficeScene extends Phaser.Scene {
   private desiredPlayerHeight = 120;
   private desiredAgentHeight = 68;
   private inputLocked = false;
+  private clockText!: Phaser.GameObjects.Text;
 
   constructor() {
     super("OfficeScene");
@@ -100,6 +102,27 @@ export class OfficeScene extends Phaser.Scene {
     bg.setDepth(-5);
     bg.displayWidth = map.widthInPixels;
     bg.displayHeight = map.heightInPixels;
+
+    // Real-time clock overlay (positioned over the static "12:00" in the background)
+    const scaleX = map.widthInPixels / 1024;
+    const scaleY = map.heightInPixels / 904;
+    // Cover the entire LCD area with a dark rectangle first
+    const lcdX = 472 * scaleX;
+    const lcdY = 297 * scaleY;
+    const lcdW = (547 - 472) * scaleX;
+    const lcdH = (317 - 297) * scaleY;
+    const lcdCover = this.add.rectangle(
+      lcdX + lcdW / 2, lcdY + lcdH / 2, lcdW, lcdH, 0x1a1a2e
+    );
+    lcdCover.setDepth(-4);
+    this.clockText = this.add.text(510 * scaleX, 308 * scaleY, "", {
+      fontFamily: '"Courier New", monospace',
+      fontSize: "18px",
+      color: "#e05555",
+      fontStyle: "bold",
+    });
+    this.clockText.setOrigin(0.5, 0.5);
+    this.clockText.setDepth(-3);
 
     const npcLayer = map.getObjectLayer("NPCs");
     if (npcLayer) {
@@ -182,6 +205,8 @@ export class OfficeScene extends Phaser.Scene {
     this.inputLocked = locked;
     if (this.input.keyboard) {
       this.input.keyboard.enabled = !locked;
+      // Reset all keys to prevent stuck keys when toggling input lock
+      this.input.keyboard.resetKeys();
     }
   }
 
@@ -191,9 +216,18 @@ export class OfficeScene extends Phaser.Scene {
 
   setSelectedAgent(agentId: string | null) {
     this.selectedAgentId = agentId;
+    // Clean up previous indicator
+    if (this.selectionRing) {
+      this.selectionRing.destroy();
+      this.selectionRing = undefined;
+    }
     for (const [id, sprite] of this.npcSprites) {
       if (id === agentId) {
         sprite.setTint(0xffd166);
+        // Create a small downward-pointing triangle above the agent
+        const gfx = this.add.graphics();
+        gfx.setDepth(10);
+        this.selectionRing = gfx;
       } else {
         sprite.clearTint();
       }
@@ -291,7 +325,7 @@ export class OfficeScene extends Phaser.Scene {
       }
       const typing = this.typingIndicators.get(agent.agentId);
       if (typing) {
-        const offset = sprite ? sprite.displayHeight + 10 : 30;
+        const offset = sprite ? sprite.displayHeight - 6 : 14;
         typing.container.setPosition(pos.x - 6, pos.y - offset);
       }
       const jitter = this.typingJitter.get(agent.agentId) ?? {
@@ -333,6 +367,16 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   update() {
+    // Update clock every frame (text change is cheap; only redraws when string changes)
+    const now = new Date();
+    let h = now.getHours() % 12;
+    if (h === 0) h = 12;
+    const m = now.getMinutes().toString().padStart(2, "0");
+    const timeStr = `${h}:${m}`;
+    if (this.clockText && this.clockText.text !== timeStr) {
+      this.clockText.setText(timeStr);
+    }
+
     if (!this.player) return;
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     if (this.inputLocked) {
@@ -397,9 +441,11 @@ export class OfficeScene extends Phaser.Scene {
         this.typingJitter.set(id, jitter);
       }
 
-      if (!meta || meta.status !== "working" || !this.typingJitterEnabled) {
+      if (!meta || (meta.status !== "working" && meta.status !== "thinking") || !this.typingJitterEnabled) {
         typing.container.setVisible(false);
         if (sprite) {
+          // Clear thinking tint (but preserve selected tint)
+          if (id !== this.selectedAgentId) sprite.clearTint();
           jitter.offsetX = 0;
           jitter.offsetY = 0;
           jitter.nextAt = now + Phaser.Math.Between(200, 600);
@@ -427,6 +473,19 @@ export class OfficeScene extends Phaser.Scene {
       }
       if (sprite) {
         sprite.setPosition(jitter.baseX + jitter.offsetX, jitter.baseY + jitter.offsetY);
+      }
+    }
+
+    // Update selection arrow — bouncing triangle above selected agent
+    if (this.selectionRing && this.selectedAgentId) {
+      const sprite = this.npcSprites.get(this.selectedAgentId);
+      if (sprite) {
+        const bounce = Math.sin(now / 250) * 3;
+        const x = sprite.x;
+        const y = sprite.y - sprite.displayHeight - 28 + bounce;
+        this.selectionRing.clear();
+        this.selectionRing.fillStyle(0xffd166, 1);
+        this.selectionRing.fillTriangle(x - 5, y, x + 5, y, x, y + 6);
       }
     }
   }

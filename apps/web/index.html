@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Office Agent World</title>
+    <title>AIOffice</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -19,7 +19,7 @@
             <div class="panel-subtitle" id="panel-status">status</div>
           </div>
           <div class="panel-header-actions">
-            <button id="panel-new-chat" class="panel-action-btn" aria-label="New Chat" title="New Chat">+</button>
+            <button id="panel-new-chat" class="panel-action-btn panel-new-btn" aria-label="New Chat" title="New Conversation">+</button>
             <button id="panel-delete" class="panel-action-btn panel-delete-btn" aria-label="Delete Agent" title="Delete Agent">×</button>
             <button id="panel-close" class="panel-close" aria-label="Close">Esc</button>
           </div>
@@ -41,7 +41,7 @@
         <div class="panel-hint">Press E near an agent. Esc to close.</div>
       </div>
       <div id="hud" class="hud">
-        <div class="hud-title">Office Agent World</div>
+        <div class="hud-title">AIOffice</div>
         <div class="hud-subtitle">WASD to move. E to talk. 1-9 to jump to agent. Esc to close.</div>
       </div>
       <div id="audio-controls" class="audio-controls">
@@ -93,6 +93,10 @@
             <div class="form-group">
               <label for="agent-personality">Personality <small style="opacity:0.5">(optional)</small></label>
               <input type="text" id="agent-personality" placeholder="e.g., Sarcastic senior engineer who's seen it all" />
+            </div>
+            <div class="form-group" style="flex-direction:row;align-items:center;gap:8px;">
+              <input type="checkbox" id="agent-continue" style="width:auto;" />
+              <label for="agent-continue" style="margin:0;cursor:pointer;">Continue previous conversation in this directory</label>
             </div>
             <button id="create-agent-btn" class="panel-send" style="width:100%;margin-top:12px;">Create Agent</button>
             <div id="agent-command" class="agent-command hidden">

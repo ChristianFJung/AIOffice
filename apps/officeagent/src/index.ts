@@ -1,45 +1,91 @@
 #!/usr/bin/env node
-import { spawn } from "child_process";
-import WebSocket from "ws";
-import * as os from "os";
+
+/**
+ * officeagent — CLI for AIOffice
+ *
+ * Commands:
+ *   start   — Launch the server and web app
+ *   spawn   — Spawn an AI agent into the world
+ */
+
+import { spawn as nodeSpawn, execSync } from "child_process";
 import * as path from "path";
 
-// Random name generator
-const adjectives = ["Swift", "Clever", "Brave", "Calm", "Eager", "Fancy", "Jolly", "Lucky", "Noble", "Quick", "Sharp", "Witty", "Zen", "Bold", "Cool"];
-const nouns = ["Fox", "Owl", "Bear", "Wolf", "Hawk", "Lion", "Tiger", "Panda", "Raven", "Falcon", "Phoenix", "Dragon", "Ninja", "Coder", "Dev"];
+const ROOT = path.resolve(import.meta.dirname ?? __dirname, "../../..");
 
-function randomName(): string {
-  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  return `${adj} ${noun}`;
-}
+// ── start command ────────────────────────────────────────────────────
 
-function randomDesk(): { x: number; y: number } {
-  // Random positions in the office area (based on map layout)
-  const desks = [
-    { x: 195, y: 617 },
-    { x: 645, y: 618 },
-    { x: 195, y: 450 },
-    { x: 645, y: 450 },
-    { x: 420, y: 530 },
-    { x: 300, y: 350 },
-    { x: 540, y: 350 },
-  ];
-  // Add some randomness to avoid exact overlap
-  const base = desks[Math.floor(Math.random() * desks.length)];
-  return {
-    x: base.x + Math.floor(Math.random() * 40) - 20,
-    y: base.y + Math.floor(Math.random() * 40) - 20,
+function startWorld(args: string[]) {
+  let serverOnly = false;
+  let webOnly = false;
+
+  for (const arg of args) {
+    if (arg === "--server-only") serverOnly = true;
+    if (arg === "--web-only") webOnly = true;
+    if (arg === "--help" || arg === "-h") {
+      console.log(`
+officeagent start — Launch AIOffice
+
+Usage:
+  officeagent start [options]
+
+Options:
+  --server-only   Only start the server (port 3003)
+  --web-only      Only start the web app (port 3000)
+  --help, -h      Show this help
+
+With no flags, starts both the server and web app.
+`);
+      process.exit(0);
+    }
+  }
+
+  console.log("🏢 Starting AIOffice...\n");
+
+  const procs: ReturnType<typeof nodeSpawn>[] = [];
+
+  if (!webOnly) {
+    console.log("  🖥  Server → http://localhost:3003");
+    const server = nodeSpawn("npm", ["run", "dev:server"], {
+      cwd: ROOT,
+      stdio: "inherit",
+      shell: true,
+    });
+    procs.push(server);
+  }
+
+  if (!serverOnly) {
+    console.log("  🌐 Web    → http://localhost:3000");
+    const web = nodeSpawn("npm", ["run", "dev:web"], {
+      cwd: ROOT,
+      stdio: "inherit",
+      shell: true,
+    });
+    procs.push(web);
+  }
+
+  console.log("\n  Press Ctrl+C to stop.\n");
+
+  const shutdown = () => {
+    console.log("\n👋 Shutting down...");
+    for (const p of procs) {
+      try { p.kill("SIGTERM"); } catch {}
+    }
+    process.exit(0);
   };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
-// Parse CLI arguments
-function parseArgs(): { name: string; cli: string; server: string; personality: string } {
-  const args = process.argv.slice(2);
+// ── spawn command ────────────────────────────────────────────────────
+
+async function spawnAgent(args: string[]) {
   let name = "";
   let cli = "claude-code";
   let server = "http://localhost:3003";
   let personality = "";
+  let dir = process.cwd();
+  let continueConversation = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--name" || args[i] === "-n") {
@@ -53,342 +99,267 @@ function parseArgs(): { name: string; cli: string; server: string; personality: 
       server = args[++i] || server;
     } else if (args[i] === "--personality" || args[i] === "-p") {
       personality = args[++i] || "";
+    } else if (args[i] === "--dir" || args[i] === "-d") {
+      dir = args[++i] || dir;
+    } else if (args[i] === "--continue") {
+      continueConversation = true;
     } else if (args[i] === "--help" || args[i] === "-h") {
       console.log(`
-officeagent - Spawn an AI agent in the Office Sprite World
+officeagent spawn — Spawn an AI agent into the world
 
 Usage:
-  officeagent [options]
+  officeagent spawn [options]
 
 Options:
   --name, -n <name>          Agent display name (default: random)
   --cli, -c <type>           CLI type: "claude" or "copilot" (default: claude)
-  --personality, -p <desc>   Personality description (optional)
+  --personality, -p <desc>   Personality description
+  --dir, -d <path>           Working directory (default: cwd)
+  --continue                 Resume previous conversation
   --server, -s <url>         Server URL (default: http://localhost:3003)
   --help, -h                 Show this help
 
 Examples:
-  officeagent                                    # Random name, Claude CLI
-  officeagent --name "Bob"                       # Named "Bob", Claude CLI
-  officeagent -n "Alice" -c copilot              # Named "Alice", Copilot CLI
-  officeagent -n "Grumpy" -p "Sarcastic senior engineer who's seen it all"
+  officeagent spawn                                         # Random name, Claude
+  officeagent spawn --name "Bob" --dir ~/projects/myapp
+  officeagent spawn -n "Alice" -c copilot
+  officeagent spawn -n "Grumpy" -p "Sarcastic senior dev"
 `);
       process.exit(0);
     }
   }
 
-  if (!name) {
-    name = randomName();
+  console.log(`\n🏢 Spawning agent via ${server}...`);
+
+  const res = await fetch(`${server}/agents/spawn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: name || undefined,
+      cliType: cli,
+      workingDirectory: dir,
+      personality: personality || undefined,
+      continueConversation,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    console.error(`❌ Failed to spawn: ${res.status}`, body.error || "");
+    process.exit(1);
   }
 
-  return { name, cli, server, personality };
+  const body = await res.json();
+  console.log(`✅ Agent spawned!`);
+  console.log(`   ID:   ${body.agentId}`);
+  console.log(`   Name: ${name || "(random)"}`);
+  console.log(`   CLI:  ${cli}`);
+  console.log(`   Dir:  ${dir}`);
+  console.log(`\n   ${body.message}\n`);
 }
 
-// Agent class
-class OfficeAgent {
-  private agentId: string;
-  private name: string;
-  private cliType: string;
-  private personality: string;
-  private workingDirectory: string;
-  private serverUrl: string;
-  private wsUrl: string;
-  private ws: WebSocket | null = null;
-  private isBusy = false;
-  private processedMessages = new Set<string>();
-  private configDir: string;
+// ── demo command ─────────────────────────────────────────────────────
 
-  constructor(name: string, cliType: string, serverUrl: string, personality: string = "") {
-    this.agentId = `agent-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-    this.name = name;
-    this.cliType = cliType;
-    this.personality = personality;
-    this.workingDirectory = process.cwd();
-    this.serverUrl = serverUrl;
-    this.wsUrl = serverUrl.replace("http", "ws") + "/ws";
-    // Each agent gets its own config directory to isolate conversation history
-    this.configDir = path.join(os.tmpdir(), "officeagent", this.agentId);
-  }
+function detectCLIs(): { hasClaude: boolean; hasCopilot: boolean } {
+  let hasClaude = false;
+  let hasCopilot = false;
+  try { execSync("which claude", { stdio: "ignore" }); hasClaude = true; } catch {}
+  try { execSync("which copilot", { stdio: "ignore" }); hasCopilot = true; } catch {}
+  return { hasClaude, hasCopilot };
+}
 
-  async start(): Promise<void> {
-    console.log(`\n🏢 Office Agent Starting...`);
-    console.log(`   Name: ${this.name}`);
-    console.log(`   CLI: ${this.cliType}`);
-    console.log(`   Folder: ${this.workingDirectory}`);
-    console.log(`   Server: ${this.serverUrl}\n`);
-
-    // Register with server
-    await this.register();
-
-    // Connect WebSocket
-    this.connect();
-
-    // Handle shutdown
-    process.on("SIGINT", () => this.shutdown());
-    process.on("SIGTERM", () => this.shutdown());
-
-    console.log(`✅ Agent "${this.name}" is online! Press Ctrl+C to stop.\n`);
-  }
-
-  private async register(): Promise<void> {
-    const desk = randomDesk();
-    const response = await fetch(`${this.serverUrl}/agents/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        agentId: this.agentId,
-        name: this.name,
-        desk,
-        cliType: this.cliType,
-        workingDirectory: this.workingDirectory,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to register: ${response.status}`);
-    }
-
-    // Set initial status
-    await this.postStatus("available", "Ready");
-  }
-
-  private connect(): void {
-    this.ws = new WebSocket(this.wsUrl);
-
-    this.ws.on("open", () => {
-      console.log("📡 Connected to server");
-    });
-
-    this.ws.on("message", (data) => {
-      try {
-        const event = JSON.parse(data.toString());
-        this.handleEvent(event);
-      } catch {
-        // Ignore parse errors
-      }
-    });
-
-    this.ws.on("close", () => {
-      console.log("📡 Disconnected, reconnecting...");
-      setTimeout(() => this.connect(), 2000);
-    });
-
-    this.ws.on("error", (err) => {
-      console.error("WebSocket error:", err.message);
-    });
-  }
-
-  private handleEvent(event: any): void {
-    // Only handle messages for this agent
-    if (event.agentId !== this.agentId) return;
-
-    if (event.type === "agent.message") {
-      const payload = event.payload;
-      if (payload.channel === "task") {
-        // Create unique ID for deduplication
-        const msgId = `${event.timestamp}-${payload.text}`;
-        if (this.processedMessages.has(msgId)) return;
-
-        // Check message age
-        const age = Date.now() - new Date(event.timestamp).getTime();
-        if (age > 3000) return;
-
-        this.processedMessages.add(msgId);
-        this.handleMessage(payload.text);
-      }
-    }
-
-    // Handle control commands
-    if (event.type === "agent.control") {
-      const payload = event.payload;
-      if (payload.command === "reset") {
-        this.resetConversation();
-        this.postMessage("🔄 Conversation reset. Starting fresh!", "reply");
-        this.postStatus("available", "Ready");
-      } else if (payload.command === "delete") {
-        console.log("👋 Received delete command, shutting down...");
-        this.shutdown();
-      }
-    }
-  }
-
-  private async handleMessage(text: string): Promise<void> {
-    if (this.isBusy) {
-      console.log(`⏳ Busy, skipping: ${text.substring(0, 30)}...`);
-      return;
-    }
-
-    this.isBusy = true;
-    console.log(`💬 Message: ${text}`);
-
+async function waitForServer(url: string, timeoutMs = 30000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
     try {
-      await this.postStatus("thinking", "Thinking...");
-      const response = await this.runCLI(text);
-      console.log(`✨ Response: ${response.substring(0, 100)}...`);
-      await this.postMessage(response, "reply");
-      await this.postStatus("replied", "New message");
-    } catch (error) {
-      console.error(`❌ Error:`, error);
-      await this.postMessage(`Error: ${error}`, "reply");
-      await this.postStatus("error", "Something went wrong");
-    } finally {
-      this.isBusy = false;
+      const res = await fetch(`${url}/agents`);
+      if (res.ok) return true;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+async function runDemo(args: string[]) {
+  for (const arg of args) {
+    if (arg === "--help" || arg === "-h") {
+      console.log(`
+officeagent demo — Launch a full demo with auto-detected AI agents
+
+Usage:
+  officeagent demo [options]
+
+Options:
+  --help, -h   Show this help
+
+Detects which AI CLIs are installed (claude, copilot) and spawns agents
+into two demo projects: a todo-api spec and a partially-built world-clock app.
+
+  Both installed → one Claude + one Copilot agent
+  Only Claude    → two Claude agents
+  Only Copilot   → two Copilot agents
+`);
+      process.exit(0);
     }
   }
 
-  private isFirstMessage = true;
-  private skipContinue = false;
+  const { hasClaude, hasCopilot } = detectCLIs();
 
-  public resetConversation(): void {
-    this.isFirstMessage = true;
-    this.skipContinue = true;
-    console.log("🔄 Conversation reset - next message starts fresh");
+  if (!hasClaude && !hasCopilot) {
+    console.error(`
+❌ No supported AI CLI found.
+
+Install at least one:
+  • Claude Code:  https://docs.anthropic.com/en/docs/claude-code
+  • GitHub Copilot CLI:  https://githubnext.com/projects/copilot-cli
+`);
+    process.exit(1);
   }
 
-  private runCLI(message: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      // Add nickname context on first message or after reset
-      let prompt = message;
-      const wasFirstMessage = this.isFirstMessage;
-      if (this.isFirstMessage) {
-        const personalityLine = this.personality
-          ? `\nYour personality: ${this.personality}\n`
-          : "";
-        const context = `You're joining a virtual office simulation where AI agents work alongside humans. Think of it like a cozy pixel-art coworking space where each agent has their own desk, personality, and expertise.
+  console.log("\n🏢 AIOffice — Demo Mode\n");
+  console.log("  Detected CLIs:");
+  if (hasClaude) console.log("    ✅ Claude Code");
+  else console.log("    ⬜ Claude Code (not found)");
+  if (hasCopilot) console.log("    ✅ GitHub Copilot CLI");
+  else console.log("    ⬜ GitHub Copilot CLI (not found)");
+  console.log();
 
-Your identity in this office: "${this.name}"
-Your workspace: ${this.workingDirectory}${personalityLine}
-Embrace being ${this.name} — it's your persona here. When asked who you are, you're ${this.name}, a sharp and helpful coworker who's genuinely invested in the project. You're not an assistant floating in the void; you're a colleague sitting at the desk next to mine.
+  // Start the world
+  const procs: ReturnType<typeof nodeSpawn>[] = [];
 
-Keep it natural: be warm, be direct, have opinions. Say "boss" casually like a friend would, not formally. Think brilliant coworker energy — someone who's excited to dig into problems, pushes back when something seems off, and celebrates wins together.
+  console.log("  🖥  Server → http://localhost:3003");
+  const server = nodeSpawn("npm", ["run", "dev:server"], {
+    cwd: ROOT,
+    stdio: "ignore",
+    shell: true,
+  });
+  procs.push(server);
 
-Let's get to work.
+  console.log("  🌐 Web    → http://localhost:3000");
+  const web = nodeSpawn("npm", ["run", "dev:web"], {
+    cwd: ROOT,
+    stdio: "ignore",
+    shell: true,
+  });
+  procs.push(web);
 
-`;
-        prompt = context + message;
-        this.isFirstMessage = false;
-      }
-
-      // Determine if we should continue the conversation
-      // Skip --continue on first message so new agents always start fresh
-      const shouldContinue = !this.skipContinue && !wasFirstMessage;
-      this.skipContinue = false; // Reset for next message
-
-      // Escape prompt for shell execution
-      // Handle Windows shell escaping: escape quotes, backslashes, and special chars
-      const escapedPrompt = prompt
-        .replace(/\\/g, '\\\\')     // Escape backslashes first
-        .replace(/"/g, '\\"')        // Escape double quotes
-        .replace(/\n/g, ' ')         // Replace newlines with spaces (safer for shell)
-        .replace(/\r/g, '')          // Remove carriage returns
-        .replace(/`/g, '\\`')        // Escape backticks
-        .replace(/\$/g, '\\$');      // Escape dollar signs
-      
-      let fullCommand: string;
-      if (this.cliType === "copilot-cli") {
-        const continueFlag = shouldContinue ? "--continue " : "";
-        // Use per-agent config directory to isolate conversation history
-        // Escape the config dir path for Windows shells
-        const escapedConfigDir = this.configDir.replace(/\\/g, '/');
-        fullCommand = `copilot --config-dir "${escapedConfigDir}" -p "${escapedPrompt}" ${continueFlag}--allow-all --silent`;
-      } else {
-        const continueFlag = shouldContinue ? "--continue " : "";
-        fullCommand = `claude -p "${escapedPrompt}" ${continueFlag}--dangerously-skip-permissions`;
-      }
-
-      const child = spawn(fullCommand, [], {
-        cwd: this.workingDirectory,
-        env: { ...process.env, CI: "true", TERM: "xterm-256color" },
-        stdio: ["ignore", "pipe", "pipe"],
-        shell: true, // Required for Windows to find CLI commands
-      });
-
-      let stdout = "";
-      let stderr = "";
-      let result: string | null = null;
-
-      child.stdout?.on("data", (data) => {
-        const text = data.toString();
-        stdout += text;
-
-        // Tee raw output to our stdout so it flows through the PTY
-        // This makes the terminal tab show the real claude output
-        process.stdout.write(data);
-
-        // For both CLI types, the plain text output is the result
-        result = stdout.trim();
-      });
-
-      child.stderr?.on("data", (data) => {
-        stderr += data.toString();
-        // Also tee stderr
-        process.stderr.write(data);
-      });
-
-      child.on("error", reject);
-
-      child.on("exit", (code) => {
-        if (code === 0 && result) {
-          resolve(result);
-        } else if (code === 0 && stdout.trim()) {
-          resolve(stdout.trim());
-        } else if (stderr) {
-          reject(new Error(stderr.trim()));
-        } else {
-          reject(new Error(`Exit code ${code}`));
-        }
-      });
-
-      // Timeout
-      setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new Error("Timeout"));
-      }, 300000);
-    });
-  }
-
-  private async postStatus(status: string, summary: string): Promise<void> {
-    await fetch(`${this.serverUrl}/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "agent.status",
-        agentId: this.agentId,
-        timestamp: new Date().toISOString(),
-        payload: { status, summary },
-      }),
-    }).catch(() => {});
-  }
-
-  private async postMessage(text: string, channel: string): Promise<void> {
-    await fetch(`${this.serverUrl}/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "agent.message",
-        agentId: this.agentId,
-        timestamp: new Date().toISOString(),
-        payload: { text, channel },
-      }),
-    }).catch(() => {});
-  }
-
-  private async shutdown(): Promise<void> {
+  const shutdown = () => {
     console.log("\n👋 Shutting down...");
-    await this.postStatus("available", "Offline");
-    this.ws?.close();
+    for (const p of procs) {
+      try { p.kill("SIGTERM"); } catch {}
+    }
     process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  console.log("\n  ⏳ Waiting for server...");
+  const ready = await waitForServer("http://localhost:3003");
+  if (!ready) {
+    console.error("  ❌ Server didn't start in time.");
+    shutdown();
+    return;
   }
+  console.log("  ✅ Server ready!\n");
+
+  // Determine agent assignments
+  const demoDir1 = path.join(ROOT, "demo", "todo-api");
+  const demoDir2 = path.join(ROOT, "demo", "world-clock");
+
+  type AgentDef = { name: string; cli: string; dir: string };
+  const agents: AgentDef[] = [];
+
+  if (hasClaude && hasCopilot) {
+    agents.push({ name: "Sarah (Lead)", cli: "claude-code", dir: demoDir1 });
+    agents.push({ name: "Jake (Intern)", cli: "copilot-cli", dir: demoDir2 });
+  } else if (hasClaude) {
+    agents.push({ name: "Sarah (Lead)", cli: "claude-code", dir: demoDir1 });
+    agents.push({ name: "Priya (Dev)", cli: "claude-code", dir: demoDir2 });
+  } else {
+    agents.push({ name: "Sarah (Lead)", cli: "copilot-cli", dir: demoDir1 });
+    agents.push({ name: "Jake (Intern)", cli: "copilot-cli", dir: demoDir2 });
+  }
+
+  // Spawn agents with dramatic pacing
+  for (const agent of agents) {
+    await new Promise((r) => setTimeout(r, 300));
+    console.log(`  🤖 Spawning ${agent.name} → ${agent.cli} → ${path.basename(agent.dir)}/`);
+    try {
+      const res = await fetch("http://localhost:3003/agents/spawn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: agent.name,
+          cliType: agent.cli,
+          workingDirectory: agent.dir,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        console.error(`     ❌ Failed: ${body.error || res.status}`);
+      } else {
+        console.log(`     ✅ Online`);
+      }
+    } catch (e: any) {
+      console.error(`     ❌ ${e.message}`);
+    }
+  }
+
+  console.log(`
+  🌐 Office ready → http://localhost:3000
+
+  👔 You're the boss. Go manage your team.
+     Walk up to an agent and press Enter to chat.
+     Press Ctrl+C to stop.
+`);
 }
 
-// Main
-async function main() {
-  const { name, cli, server, personality } = parseArgs();
-  const agent = new OfficeAgent(name, cli, server, personality);
-  await agent.start();
+// ── main ─────────────────────────────────────────────────────────────
+
+function showHelp() {
+  console.log(`
+officeagent — CLI for AIOffice
+
+Usage:
+  officeagent <command> [options]
+
+Commands:
+  start    Launch the server and web app
+  spawn    Spawn an AI agent into the world
+  demo     Launch a full demo with auto-detected agents
+
+Run "officeagent <command> --help" for command-specific options.
+`);
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+const [command, ...rest] = process.argv.slice(2);
+
+switch (command) {
+  case "start":
+    startWorld(rest);
+    break;
+  case "spawn":
+    spawnAgent(rest).catch((e) => {
+      console.error("Fatal:", e.message || e);
+      process.exit(1);
+    });
+    break;
+  case "demo":
+    runDemo(rest).catch((e) => {
+      console.error("Fatal:", e.message || e);
+      process.exit(1);
+    });
+    break;
+  case "--help":
+  case "-h":
+  case undefined:
+    showHelp();
+    break;
+  default:
+    // Backwards compat: if no command, treat all args as spawn
+    spawnAgent(process.argv.slice(2)).catch((e) => {
+      console.error("Fatal:", e.message || e);
+      process.exit(1);
+    });
+}
+

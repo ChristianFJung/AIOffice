@@ -5,7 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
-import { ChildProcess } from "child_process";
+import * as os from "os";
 import * as pty from "node-pty";
 import {
   EventEnvelopeSchema,
@@ -16,7 +16,19 @@ import {
   type AgentPositionPayload,
   type TaskAssignPayload
 } from "../../../shared/src/schema";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  readdirSync,
+  statSync,
+  openSync,
+  readSync,
+  closeSync,
+  realpathSync
+} from "fs";
 import { randomUUID } from "crypto";
 
 const app = express();
@@ -153,40 +165,608 @@ function applyEvent(event: EventEnvelope) {
 }
 
 // ============ Agent PTY tracking ============
-// (declared early so register handler can call linkAgentToPty)
 
 interface AgentPtySession {
   ptyProcess: pty.IPty;
-  clients: Set<WebSocket>;   // terminal tab viewers
-  scrollback: string[];      // buffered output so terminal tab can catch up
+  clients: Set<WebSocket>;
+  scrollback: string[];
+  workingDirectory: string;
+  cliType: string;
+  personality: string;
+  isFirstMessage: boolean;
+  jsonlWatcher: ReturnType<typeof setInterval> | null;
+  jsonlPath: string | null;
+  lastJsonlSize: number;
+  isBusy: boolean;
+  settleTimer: ReturnType<typeof setTimeout> | null;
+  pendingText: string;
+  pendingInput: string;
+  lastChatMessage: string;
 }
 
 const agentPtys = new Map<string, AgentPtySession>();
-const processIdToAgentId = new Map<string, string>();
-const pendingPtys = new Map<string, pty.IPty>();
-const spawnedProcesses = new Map<string, ChildProcess>();
 
-function linkAgentToPty(agentId: string, agentName?: string) {
-  if (agentPtys.has(agentId)) return;
+// ============ JSONL Watcher ============
 
-  for (const [, ptyProc] of pendingPtys) {
-    const spawnName = (ptyProc as any).__spawnName as string;
-    const processId = (ptyProc as any).__processId as string;
-    const scrollback = (ptyProc as any).__scrollback as string[];
+function getClaudeProjectDir(workDir: string): string {
+  // Use realpathSync to follow symlinks (e.g. /tmp → /private/tmp on macOS)
+  let resolved: string;
+  try {
+    resolved = realpathSync(workDir);
+  } catch {
+    resolved = path.resolve(workDir);
+  }
+  // Claude CLI replaces both slashes and spaces with dashes
+  const encoded = resolved.replace(/\//g, "-").replace(/ /g, "-");
+  return path.join(os.homedir(), ".claude", "projects", encoded);
+}
 
-    if (spawnName === agentName) {
-      processIdToAgentId.set(processId, agentId);
-      agentPtys.set(agentId, {
-        ptyProcess: ptyProc,
-        clients: new Set(),
-        scrollback,
-      });
-      // eslint-disable-next-line no-console
-      console.log(`[terminal] Linked agent "${agentName}" (${agentId}) to PTY (processId: ${processId})`);
+function findActiveJsonl(projectDir: string): string | null {
+  if (!existsSync(projectDir)) return null;
+  try {
+    const files = readdirSync(projectDir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => ({
+        name: f,
+        mtime: statSync(path.join(projectDir, f)).mtimeMs
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+    return files.length > 0 ? path.join(projectDir, files[0].name) : null;
+  } catch {
+    return null;
+  }
+}
+
+function startJsonlWatcher(agentId: string) {
+  const session = agentPtys.get(agentId);
+  if (!session) return;
+
+  const projectDir = getClaudeProjectDir(session.workingDirectory);
+  // eslint-disable-next-line no-console
+  console.log(`[jsonl:${agentId}] Watching project dir: ${projectDir}`);
+
+  // Snapshot existing files AND their sizes so we detect both new files
+  // and existing files that Claude appends to (happens after reset)
+  const existingFileSizes = new Map<string, number>();
+  if (existsSync(projectDir)) {
+    try {
+      readdirSync(projectDir)
+        .filter((f) => f.endsWith(".jsonl"))
+        .forEach((f) => {
+          try {
+            existingFileSizes.set(f, statSync(path.join(projectDir, f)).size);
+          } catch {}
+        });
+    } catch {}
+  }
+
+  const poller = setInterval(() => {
+    if (!existsSync(projectDir)) return;
+
+    // If we already locked onto a file, just check for new content
+    if (session.jsonlPath) {
+      // fall through to content-reading below
+    } else {
+      // Look for a NEW .jsonl file or an existing file that GREW
+      try {
+        const currentFiles = readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
+        // Check for brand new file
+        let targetFile = currentFiles.find((f) => !existingFileSizes.has(f));
+        let startByte = 0;
+        if (!targetFile) {
+          // Check for existing file that grew (Claude appending after reset)
+          for (const f of currentFiles) {
+            try {
+              const currentSize = statSync(path.join(projectDir, f)).size;
+              const prevSize = existingFileSizes.get(f) ?? 0;
+              if (currentSize > prevSize) {
+                targetFile = f;
+                startByte = prevSize; // Only read the NEW bytes
+                break;
+              }
+            } catch {}
+          }
+        }
+        if (targetFile) {
+          session.jsonlPath = path.join(projectDir, targetFile);
+          session.lastJsonlSize = startByte;
+          // eslint-disable-next-line no-console
+          console.log(`[jsonl:${agentId}] Locked onto JSONL: ${targetFile} (from byte ${startByte})`);
+        }
+      } catch {}
+      if (!session.jsonlPath) return;
+    }
+
+    const jsonlFile = session.jsonlPath!;
+
+    // Check for new content
+    let currentSize: number;
+    try {
+      currentSize = statSync(jsonlFile).size;
+    } catch {
       return;
+    }
+    if (currentSize <= session.lastJsonlSize) return;
+
+    // Read new bytes
+    const newBytes = currentSize - session.lastJsonlSize;
+    const buffer = Buffer.alloc(newBytes);
+    let fd: number;
+    try {
+      fd = openSync(jsonlFile, "r");
+      readSync(fd, buffer, 0, newBytes, session.lastJsonlSize);
+      closeSync(fd);
+    } catch {
+      return;
+    }
+
+    // Parse lines, handling potential partial writes
+    const newContent = buffer.toString("utf-8");
+    const parts = newContent.split("\n");
+    const hasTrailingNewline = newContent.endsWith("\n");
+    const completeLines = hasTrailingNewline
+      ? parts.filter((l) => l.trim())
+      : parts.slice(0, -1).filter((l) => l.trim());
+    const incompletePart = hasTrailingNewline ? "" : (parts[parts.length - 1] || "");
+
+    // Only advance past complete lines
+    session.lastJsonlSize = currentSize - Buffer.byteLength(incompletePart, "utf-8");
+
+    for (const line of completeLines) {
+      try {
+        const obj = JSON.parse(line);
+        processJsonlLine(agentId, obj);
+      } catch {
+        // Malformed line — skip
+      }
+    }
+  }, 500);
+
+  session.jsonlWatcher = poller;
+}
+
+function processJsonlLine(agentId: string, obj: any) {
+  const session = agentPtys.get(agentId);
+  if (!session) return;
+
+  // Detect user messages (terminal-originated input sets "thinking")
+  if (obj.type === "user" && !session.isBusy) {
+    session.isBusy = true;
+
+    // Extract user text and post as chat message so it appears in chat view
+    // Skip if this message was already posted via chat UI (bridgeChatToPty)
+    const userText = Array.isArray(obj.message?.content)
+      ? obj.message.content
+          .filter((b: any) => b.type === "text" && b.text)
+          .map((b: any) => b.text)
+          .join("\n")
+      : typeof obj.message?.content === "string"
+        ? obj.message.content
+        : null;
+    if (userText && (!session.lastChatMessage || !userText.includes(session.lastChatMessage))) {
+      const userMsgEvent: EventEnvelope = {
+        type: "agent.message",
+        agentId,
+        timestamp: new Date().toISOString(),
+        payload: { text: userText, channel: "task" }
+      };
+      applyEvent(userMsgEvent);
+      appendEvent(userMsgEvent);
+      broadcast(userMsgEvent);
+    }
+    session.lastChatMessage = "";
+
+    const ev: EventEnvelope = {
+      type: "agent.status",
+      agentId,
+      timestamp: new Date().toISOString(),
+      payload: { status: "thinking", summary: "Thinking..." }
+    };
+    applyEvent(ev);
+    appendEvent(ev);
+    broadcast(ev);
+  }
+
+  // Detect assistant text blocks (stop_reason is always null in Claude Code JSONL,
+  // so we rely on a settle timer instead)
+  if (obj.type === "assistant" && obj.message?.content) {
+    const textParts: string[] = [];
+    for (const block of obj.message.content) {
+      if (block.type === "text" && block.text) {
+        textParts.push(block.text);
+      }
+    }
+    if (textParts.length > 0) {
+      // Use the latest text block (replaces previous — we want the final answer)
+      session.pendingText = textParts.join("\n");
+      if (session.settleTimer) clearTimeout(session.settleTimer);
+      session.settleTimer = setTimeout(() => flushPendingResponse(agentId), 3000);
     }
   }
 }
+
+function flushPendingResponse(agentId: string) {
+  const session = agentPtys.get(agentId);
+  if (!session || !session.pendingText) return;
+
+  // Clean up: trim control chars and whitespace (especially from PTY output)
+  const text = session.pendingText.replace(/[\x00-\x09\x0b\x0c\x0e-\x1f]/g, "").trim();
+  session.pendingText = "";
+  session.settleTimer = null;
+  session.isBusy = false;
+
+  if (!text) return;
+
+  // eslint-disable-next-line no-console
+  console.log(`[flush:${agentId}] Flushing response (${text.length} chars)`);
+
+  // Post reply message
+  const replyEvent: EventEnvelope = {
+    type: "agent.message",
+    agentId,
+    timestamp: new Date().toISOString(),
+    payload: { text, channel: "reply" }
+  };
+  applyEvent(replyEvent);
+  appendEvent(replyEvent);
+  broadcast(replyEvent);
+
+  // Post replied status
+  const statusEvent: EventEnvelope = {
+    type: "agent.status",
+    agentId,
+    timestamp: new Date().toISOString(),
+    payload: { status: "replied", summary: "New message" }
+  };
+  applyEvent(statusEvent);
+  appendEvent(statusEvent);
+  broadcast(statusEvent);
+}
+
+// ============ Copilot JSONL Watcher ============
+
+function getCopilotSessionDir(): string {
+  return path.join(os.homedir(), ".copilot", "session-state");
+}
+
+function startCopilotJsonlWatcher(agentId: string) {
+  const session = agentPtys.get(agentId);
+  if (!session) return;
+
+  const sessionStateDir = getCopilotSessionDir();
+  // eslint-disable-next-line no-console
+  console.log(`[copilot-jsonl:${agentId}] Watching for session in ${sessionStateDir}`);
+
+  // Snapshot existing session dirs so we detect the NEW one
+  const existingDirs = new Set<string>();
+  if (existsSync(sessionStateDir)) {
+    try {
+      readdirSync(sessionStateDir).forEach((d) => existingDirs.add(d));
+    } catch {}
+  }
+
+  const poller = setInterval(() => {
+    if (!existsSync(sessionStateDir)) return;
+
+    // If we already locked onto a JSONL file, check for new content
+    if (session.jsonlPath) {
+      let currentSize: number;
+      try {
+        currentSize = statSync(session.jsonlPath).size;
+      } catch {
+        return;
+      }
+      if (currentSize <= session.lastJsonlSize) return;
+
+      const newBytes = currentSize - session.lastJsonlSize;
+      const buffer = Buffer.alloc(newBytes);
+      try {
+        const fd = openSync(session.jsonlPath, "r");
+        readSync(fd, buffer, 0, newBytes, session.lastJsonlSize);
+        closeSync(fd);
+      } catch {
+        return;
+      }
+
+      const newContent = buffer.toString("utf-8");
+      const parts = newContent.split("\n");
+      const hasTrailingNewline = newContent.endsWith("\n");
+      const completeLines = hasTrailingNewline
+        ? parts.filter((l) => l.trim())
+        : parts.slice(0, -1).filter((l) => l.trim());
+      const incompletePart = hasTrailingNewline ? "" : (parts[parts.length - 1] || "");
+      session.lastJsonlSize = currentSize - Buffer.byteLength(incompletePart, "utf-8");
+
+      for (const line of completeLines) {
+        try {
+          const obj = JSON.parse(line);
+          processCopilotJsonlLine(agentId, obj);
+        } catch {}
+      }
+      return;
+    }
+
+    // Look for a session directory (new or existing) with matching cwd
+    try {
+      const currentDirs = readdirSync(sessionStateDir);
+      // Check newest dirs first (most likely to be the active session)
+      const dirsByMtime = currentDirs
+        .map((d) => {
+          try {
+            return { name: d, mtime: statSync(path.join(sessionStateDir, d)).mtimeMs };
+          } catch {
+            return { name: d, mtime: 0 };
+          }
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+
+      for (const { name: dir } of dirsByMtime) {
+        const wsYaml = path.join(sessionStateDir, dir, "workspace.yaml");
+        const eventsJsonl = path.join(sessionStateDir, dir, "events.jsonl");
+        if (!existsSync(wsYaml) || !existsSync(eventsJsonl)) continue;
+
+        try {
+          const yaml = readFileSync(wsYaml, "utf-8");
+          const cwdMatch = yaml.match(/^cwd:\s*(.+)$/m);
+          if (cwdMatch && cwdMatch[1].trim() === session.workingDirectory) {
+            // Check if this session was created after agent spawn (within last 30s)
+            const yamlStat = statSync(wsYaml);
+            const ageMs = Date.now() - yamlStat.mtimeMs;
+            if (ageMs < 30000) {
+              session.jsonlPath = eventsJsonl;
+              session.lastJsonlSize = 0;
+              // eslint-disable-next-line no-console
+              console.log(`[copilot-jsonl:${agentId}] Locked onto session: ${dir}`);
+              break;
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+  }, 500);
+
+  session.jsonlWatcher = poller;
+}
+
+function processCopilotJsonlLine(agentId: string, obj: any) {
+  const session = agentPtys.get(agentId);
+  if (!session) return;
+
+  if (obj.type === "user.message") {
+    if (!session.isBusy) {
+      session.isBusy = true;
+      // Post user text to chat (skip if from bridgeChatToPty)
+      const userText = obj.data?.content;
+      if (userText && typeof userText === "string" && (!session.lastChatMessage || !userText.includes(session.lastChatMessage))) {
+        const userMsgEvent: EventEnvelope = {
+          type: "agent.message",
+          agentId,
+          timestamp: new Date().toISOString(),
+          payload: { text: userText, channel: "task" }
+        };
+        applyEvent(userMsgEvent);
+        appendEvent(userMsgEvent);
+        broadcast(userMsgEvent);
+      }
+      session.lastChatMessage = "";
+
+      const ev: EventEnvelope = {
+        type: "agent.status",
+        agentId,
+        timestamp: new Date().toISOString(),
+        payload: { status: "thinking", summary: "Thinking..." }
+      };
+      applyEvent(ev);
+      appendEvent(ev);
+      broadcast(ev);
+    }
+  }
+
+  if (obj.type === "assistant.message") {
+    const text = obj.data?.content;
+    if (text && typeof text === "string") {
+      session.pendingText = text;
+      if (session.settleTimer) clearTimeout(session.settleTimer);
+      session.settleTimer = setTimeout(() => flushPendingResponse(agentId), 3000);
+    }
+  }
+
+  if (obj.type === "assistant.turn_end" && session.pendingText) {
+    // Turn ended — flush immediately instead of waiting for settle timer
+    if (session.settleTimer) clearTimeout(session.settleTimer);
+    flushPendingResponse(agentId);
+  }
+}
+
+// ============ PTY Creation ============
+
+const MAX_SCROLLBACK = 5000;
+
+function createAgentPty(
+  agentId: string,
+  workDir: string,
+  cliType: string,
+  personality: string,
+  continueConversation: boolean = false
+): AgentPtySession | null {
+  // --continue for Claude resumes the conversation in the working directory.
+  // Copilot uses --resume which needs a session ID, so we only use --continue
+  // for Copilot when explicitly requested (user checked "continue" in the UI).
+  const useClaudeContinue = continueConversation && cliType === "claude-code";
+  const useCopilotResume = continueConversation && cliType === "copilot-cli";
+
+  let shellCmd: string;
+  if (cliType === "copilot-cli") {
+    shellCmd = `copilot ${useCopilotResume ? "--resume " : ""}--allow-all`;
+  } else {
+    shellCmd = `claude ${useClaudeContinue ? "--continue " : ""}--dangerously-skip-permissions`;
+  }
+
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.CLAUDECODE;
+
+  let ptyProcess: pty.IPty;
+  try {
+    ptyProcess = pty.spawn(process.env.SHELL || "/bin/bash", ["-l", "-c", shellCmd], {
+      name: "xterm-256color",
+      cols: 120,
+      rows: 40,
+      cwd: workDir,
+      env: cleanEnv as Record<string, string>,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[pty:${agentId}] Failed to spawn:`, err);
+    return null;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`[pty:${agentId}] Spawned (pid: ${ptyProcess.pid}) in ${workDir}`);
+
+  const scrollback: string[] = [];
+  const session: AgentPtySession = {
+    ptyProcess,
+    clients: new Set(),
+    scrollback,
+    workingDirectory: workDir,
+    cliType,
+    personality,
+    isFirstMessage: true,
+    jsonlWatcher: null,
+    jsonlPath: null,
+    lastJsonlSize: 0,
+    isBusy: false,
+    settleTimer: null,
+    pendingText: "",
+    pendingInput: "",
+    lastChatMessage: "",
+  };
+  agentPtys.set(agentId, session);
+
+  // Buffer PTY output and forward to terminal viewers
+  ptyProcess.onData((data: string) => {
+    scrollback.push(data);
+    if (scrollback.length > MAX_SCROLLBACK) {
+      scrollback.splice(0, scrollback.length - MAX_SCROLLBACK);
+    }
+    const msg = JSON.stringify({ type: "output", data });
+    for (const client of session.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(msg);
+      }
+    }
+
+    // Copilot CLI: ignore PTY output for reply detection (handled by JSONL watcher)
+  });
+
+  ptyProcess.onExit(({ exitCode }) => {
+    // eslint-disable-next-line no-console
+    console.log(`[pty:${agentId}] PTY exited with code ${exitCode}`);
+    const exitMsg = JSON.stringify({ type: "exit", code: exitCode });
+    for (const client of session.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(exitMsg);
+      }
+    }
+    if (session.jsonlWatcher) clearInterval(session.jsonlWatcher);
+    if (session.settleTimer) clearTimeout(session.settleTimer);
+    // Only remove from map if this is still the active session (not replaced by reset)
+    if (agentPtys.get(agentId) === session) {
+      agentPtys.delete(agentId);
+    }
+  });
+
+  // Start JSONL watcher for reply detection
+  if (cliType === "claude-code") {
+    startJsonlWatcher(agentId);
+  } else if (cliType === "copilot-cli") {
+    startCopilotJsonlWatcher(agentId);
+  }
+
+  return session;
+}
+
+/** Lazily spawn a PTY for an existing agent (e.g. after server restart) */
+function ensureAgentPty(agentId: string): AgentPtySession | null {
+  const existing = agentPtys.get(agentId);
+  if (existing) return existing;
+
+  const agent = agents.find((a) => a.agentId === agentId);
+  if (!agent?.workingDirectory) return null;
+  const cliType = agent.cliType || "claude-code";
+
+  // eslint-disable-next-line no-console
+  console.log(`[pty:${agentId}] Auto-spawning PTY for existing agent "${agent.name}"`);
+  // Only auto-continue for Claude (has directory-based sessions);
+  // Copilot needs explicit --resume with session picker
+  const shouldContinue = cliType === "claude-code";
+  return createAgentPty(agentId, agent.workingDirectory, cliType, "", shouldContinue);
+}
+
+// ============ Chat → PTY Bridge ============
+
+function bridgeChatToPty(agentId: string, text: string) {
+  const session = ensureAgentPty(agentId);
+  if (!session) return;
+
+  if (session.isBusy) {
+    // eslint-disable-next-line no-console
+    console.log(`[chat→pty:${agentId}] Agent is busy, skipping`);
+    return;
+  }
+
+  const agent = agents.find((a) => a.agentId === agentId);
+  const agentName = agent?.name || agentId;
+
+  let prompt = text;
+  if (session.isFirstMessage) {
+    const personalityLine = session.personality
+      ? ` Your personality: ${session.personality}.`
+      : "";
+    const context = [
+      `You're joining a virtual office simulation where AI agents work alongside humans.`,
+      `Think of it like a cozy pixel-art coworking space where each agent has their own desk, personality, and expertise.`,
+      `Your identity in this office: "${agentName}".`,
+      `Your workspace: ${session.workingDirectory}.`,
+      personalityLine,
+      `Embrace being ${agentName} — it's your persona here.`,
+      `When asked who you are, you're ${agentName}, a sharp and helpful coworker who's genuinely invested in the project.`,
+      `You're not an assistant floating in the void; you're a colleague sitting at the desk next to mine.`,
+      `Keep it natural: be warm, be direct, have opinions.`,
+      `Say "boss" casually like a friend would, not formally.`,
+      `Think brilliant coworker energy — someone who's excited to dig into problems, pushes back when something seems off, and celebrates wins together.`,
+      `Let's get to work.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    prompt = context + " " + text;
+    session.isFirstMessage = false;
+  }
+
+  // Track that this message came from chat (so JSONL watcher doesn't double-post)
+  session.lastChatMessage = text;
+
+  // Write text first, then submit after a delay.
+  // Claude Code's TUI (Ink) needs Enter (\r) to submit.
+  // Copilot CLI's TUI needs Enter (\r) to submit — it handles
+  // the input buffer differently, so we clear and re-write for reliability.
+  session.ptyProcess.write(prompt);
+  setTimeout(() => session.ptyProcess.write("\r"), 500);
+  session.isBusy = true;
+
+  // Post "thinking" status immediately
+  const thinkingEvent: EventEnvelope = {
+    type: "agent.status",
+    agentId,
+    timestamp: new Date().toISOString(),
+    payload: { status: "thinking", summary: "Thinking..." }
+  };
+  applyEvent(thinkingEvent);
+  appendEvent(thinkingEvent);
+  broadcast(thinkingEvent);
+}
+
+// ============ Routes ============
 
 const RegisterSchema = z.object({
   agentId: z.string().min(1),
@@ -218,9 +798,6 @@ app.post("/agents/register", (req, res) => {
   } satisfies AgentRecord;
   upsertAgent(agentId, next);
 
-  // Link this agent to its PTY (if spawned via /agents/spawn)
-  linkAgentToPty(agentId, next.name);
-
   const snapshot: EventEnvelope = {
     type: "snapshot",
     agentId: "system",
@@ -239,15 +816,6 @@ app.get("/agents", (_req, res) => {
 app.delete("/agents/:agentId", (req, res) => {
   const { agentId } = req.params;
 
-  // Send delete command to agent via WebSocket
-  const controlEvent: EventEnvelope = {
-    type: "agent.control" as any,
-    agentId,
-    timestamp: new Date().toISOString(),
-    payload: { command: "delete" }
-  };
-  broadcast(controlEvent);
-
   // Remove from agents list
   const index = agents.findIndex((a) => a.agentId === agentId);
   if (index !== -1) {
@@ -255,18 +823,13 @@ app.delete("/agents/:agentId", (req, res) => {
     persistAgents();
   }
 
-  // Kill spawned PTY process if we have it
-  const ptySession = agentPtys.get(agentId);
-  if (ptySession) {
-    try { ptySession.ptyProcess.kill(); } catch {}
+  // Kill PTY and clean up JSONL watcher
+  const session = agentPtys.get(agentId);
+  if (session) {
+    if (session.jsonlWatcher) clearInterval(session.jsonlWatcher);
+    if (session.settleTimer) clearTimeout(session.settleTimer);
+    try { session.ptyProcess.kill(); } catch {}
     agentPtys.delete(agentId);
-  }
-
-  // Also check legacy spawned processes
-  const proc = spawnedProcesses.get(agentId);
-  if (proc) {
-    proc.kill("SIGTERM");
-    spawnedProcesses.delete(agentId);
   }
 
   // Broadcast updated snapshot
@@ -291,25 +854,52 @@ app.post("/agents/:agentId/control", (req, res) => {
     return;
   }
 
-  // If reset, also clear messages in server state
   if (command === "reset") {
+    // Clear messages in server state
     const agent = agents.find((a) => a.agentId === agentId);
     if (agent) {
       agent.messages = [];
+      agent.status = "available";
+      agent.summary = "Ready";
       persistAgents();
     }
-  }
 
-  const controlEvent: EventEnvelope = {
-    type: "agent.control" as any,
-    agentId,
-    timestamp: new Date().toISOString(),
-    payload: { command }
-  };
-  broadcast(controlEvent);
+    // Kill old PTY and spawn a fresh one
+    const session = agentPtys.get(agentId);
+    if (session) {
+      const savedWorkDir = session.workingDirectory;
+      const savedCliType = session.cliType;
+      const savedPersonality = session.personality;
+      if (session.jsonlWatcher) clearInterval(session.jsonlWatcher);
+      if (session.settleTimer) clearTimeout(session.settleTimer);
+      try { session.ptyProcess.kill(); } catch {}
+      agentPtys.delete(agentId);
 
-  // Broadcast updated snapshot after reset
-  if (command === "reset") {
+      // Spawn a fresh PTY (no --continue, fresh conversation)
+      const newSession = createAgentPty(agentId, savedWorkDir, savedCliType, savedPersonality, false);
+      if (newSession) {
+        // Wait for TUI to be ready (look for PTY output) before sending intro
+        let sent = false;
+        const readyCheck = setInterval(() => {
+          if (sent) { clearInterval(readyCheck); return; }
+          if (newSession.scrollback.length > 0) {
+            sent = true;
+            clearInterval(readyCheck);
+            setTimeout(() => bridgeChatToPty(agentId, "Introduce yourself briefly — who you are and what you see in the workspace."), 1000);
+          }
+        }, 500);
+        // Fallback: send after 8 seconds even if no output detected
+        setTimeout(() => {
+          if (!sent) {
+            sent = true;
+            clearInterval(readyCheck);
+            bridgeChatToPty(agentId, "Introduce yourself briefly — who you are and what you see in the workspace.");
+          }
+        }, 8000);
+      }
+    }
+
+    // Broadcast updated snapshot
     const snapshot: EventEnvelope = {
       type: "snapshot",
       agentId: "system",
@@ -368,6 +958,15 @@ app.post("/events", (req, res) => {
   applyEvent(envelope);
   appendEvent(envelope);
   broadcast(envelope);
+
+  // Chat → PTY bridge: forward task messages to the agent's PTY
+  if (envelope.type === "agent.message") {
+    const payload = envelope.payload as { text: string; channel: string };
+    if (payload.channel === "task") {
+      bridgeChatToPty(envelope.agentId, payload.text);
+    }
+  }
+
   res.json({ ok: true });
 });
 
@@ -380,13 +979,25 @@ function randomAgentName(): string {
   return `${adj} ${noun}`;
 }
 
-const MAX_SCROLLBACK = 5000; // lines of terminal output to buffer
+function randomDesk(): { x: number; y: number } {
+  const desks = [
+    { x: 195, y: 617 }, { x: 645, y: 618 }, { x: 195, y: 450 },
+    { x: 645, y: 450 }, { x: 420, y: 530 }, { x: 300, y: 350 },
+    { x: 540, y: 350 },
+  ];
+  const base = desks[Math.floor(Math.random() * desks.length)];
+  return {
+    x: base.x + Math.floor(Math.random() * 40) - 20,
+    y: base.y + Math.floor(Math.random() * 40) - 20,
+  };
+}
 
 const SpawnSchema = z.object({
   name: z.string().optional(),
   cliType: z.enum(["claude-code", "copilot-cli"]).default("claude-code"),
   workingDirectory: z.string().min(1),
-  personality: z.string().optional()
+  personality: z.string().optional(),
+  continueConversation: z.boolean().default(false)
 });
 
 app.post("/agents/spawn", (req, res) => {
@@ -396,102 +1007,70 @@ app.post("/agents/spawn", (req, res) => {
     return;
   }
 
-  const { cliType, workingDirectory, personality } = parsed.data;
+  const { cliType, workingDirectory, personality, continueConversation } = parsed.data;
   const name = parsed.data.name?.trim() || randomAgentName();
+  const agentId = `agent-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  const desk = randomDesk();
 
-  // Build the command arguments
-  const args: string[] = ["--name", name];
-  if (cliType === "copilot-cli") {
-    args.push("--cli", "copilot");
-  }
-  if (personality?.trim()) {
-    args.push("--personality", personality.trim());
-  }
+  // Register the agent immediately (no officeagent needed)
+  upsertAgent(agentId, {
+    agentId,
+    name,
+    desk,
+    status: "available",
+    summary: "Ready",
+    position: desk,
+    cliType,
+    workingDirectory,
+    messages: [],
+    lastSeen: new Date().toISOString()
+  });
 
-  const officeagentPath = path.join(rootDir, "apps", "officeagent", "src", "index.ts");
-  const fullCmd = `npx tsx ${officeagentPath} ${args.map(a => `"${a}"`).join(" ")}`;
+  // eslint-disable-next-line no-console
+  console.log(`[spawn:${name}] Creating PTY — agentId: ${agentId}`);
 
-  // Clean env: strip CLAUDECODE so nested claude sessions work
-  const cleanEnv = { ...process.env };
-  delete cleanEnv.CLAUDECODE;
-
-  // Spawn the officeagent inside a PTY
-  let ptyProcess: pty.IPty;
-  try {
-    ptyProcess = pty.spawn(process.env.SHELL || "/bin/bash", ["-l", "-c", fullCmd], {
-      name: "xterm-256color",
-      cols: 120,
-      rows: 40,
-      cwd: workingDirectory,
-      env: cleanEnv as Record<string, string>,
-    });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(`[spawn:${name}] Failed to spawn PTY:`, err);
-    res.status(500).json({ error: `Failed to spawn agent: ${err}` });
+  const session = createAgentPty(agentId, workingDirectory, cliType, personality?.trim() || "", continueConversation);
+  if (!session) {
+    // Remove the agent we just registered
+    const idx = agents.findIndex((a) => a.agentId === agentId);
+    if (idx !== -1) {
+      agents.splice(idx, 1);
+      persistAgents();
+    }
+    res.status(500).json({ error: "Failed to spawn agent PTY" });
     return;
   }
 
-  const processId = `spawn-${Date.now()}`;
+  // Broadcast snapshot so all clients see the new agent
+  const snapshot: EventEnvelope = {
+    type: "snapshot",
+    agentId: "system",
+    timestamp: new Date().toISOString(),
+    payload: { agents, tasks }
+  };
+  broadcast(snapshot);
 
-  // eslint-disable-next-line no-console
-  console.log(`[spawn:${name}] PTY spawned (pid: ${ptyProcess.pid}, processId: ${processId})`);
-
-  // Store PTY as pending until the agent registers and we learn its agentId
-  pendingPtys.set(processId, ptyProcess);
-
-  // Buffer output + log to server console
-  const scrollback: string[] = [];
-  ptyProcess.onData((data: string) => {
-    // Buffer for terminal tab
-    scrollback.push(data);
-    if (scrollback.length > MAX_SCROLLBACK) {
-      scrollback.splice(0, scrollback.length - MAX_SCROLLBACK);
-    }
-
-    // Forward to any connected terminal viewers
-    // We need to find the agentId for this processId
-    const agentId = processIdToAgentId.get(processId);
-    if (agentId) {
-      const session = agentPtys.get(agentId);
-      if (session) {
-        const msg = JSON.stringify({ type: "output", data });
-        for (const client of session.clients) {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(msg);
-          }
-        }
+  // Auto-send intro message so the agent greets immediately
+  if (!continueConversation) {
+    let sent = false;
+    const readyCheck = setInterval(() => {
+      if (sent) { clearInterval(readyCheck); return; }
+      if (session.scrollback.length > 0) {
+        sent = true;
+        clearInterval(readyCheck);
+        setTimeout(() => bridgeChatToPty(agentId, "Introduce yourself briefly — who you are and what you see in the workspace."), 1000);
       }
-    }
-  });
-
-  ptyProcess.onExit(({ exitCode }) => {
-    // eslint-disable-next-line no-console
-    console.log(`[spawn:${name}] PTY exited with code ${exitCode}`);
-    const agentId = processIdToAgentId.get(processId);
-    if (agentId) {
-      const session = agentPtys.get(agentId);
-      if (session) {
-        const exitMsg = JSON.stringify({ type: "exit", code: exitCode });
-        for (const client of session.clients) {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(exitMsg);
-          }
-        }
+    }, 500);
+    setTimeout(() => {
+      if (!sent) {
+        sent = true;
+        clearInterval(readyCheck);
+        bridgeChatToPty(agentId, "Introduce yourself briefly — who you are and what you see in the workspace.");
       }
-      agentPtys.delete(agentId);
-    }
-    pendingPtys.delete(processId);
-    processIdToAgentId.delete(processId);
-  });
+    }, 8000);
+  }
 
-  // When the agent registers, we'll match it by name and link agentId → PTY
-  // We store the name so the register handler can find this pending PTY
-  (ptyProcess as any).__spawnName = name;
-  (ptyProcess as any).__processId = processId;
-  (ptyProcess as any).__scrollback = scrollback;
-
-  res.json({ ok: true, processId, message: `Agent spawned in ${workingDirectory}` });
+  res.json({ ok: true, agentId, message: `Agent "${name}" spawned in ${workingDirectory}` });
 });
 
 // ============ HTTP Server + WebSocket ============
@@ -535,6 +1114,14 @@ wss.on("connection", (socket) => {
       applyEvent(envelope);
       appendEvent(envelope);
       broadcast(envelope);
+
+      // Chat → PTY bridge (for WS-originated messages)
+      if (envelope.type === "agent.message") {
+        const payload = envelope.payload as { text: string; channel: string };
+        if (payload.channel === "task") {
+          bridgeChatToPty(envelope.agentId, payload.text);
+        }
+      }
     } catch (error) {
       socket.send(JSON.stringify({ error: String(error) }));
     }
@@ -545,30 +1132,7 @@ wss.on("connection", (socket) => {
   });
 });
 
-// ============ Terminal WSS — spawns interactive CLI session ============
-
-// Strip ANSI escape codes from terminal output
-function stripAnsi(str: string): string {
-  return str
-    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")   // CSI sequences (colors, cursor, etc.)
-    .replace(/\x1b\][^\x07]*\x07/g, "")        // OSC sequences (title, etc.)
-    .replace(/\x1b[()][AB012]/g, "")            // Character set selection
-    .replace(/\x1b[\x20-\x2f][\x30-\x7e]/g, "") // 2-byte escape sequences
-    .replace(/\x1b[78]/g, "")                   // Save/restore cursor
-    .replace(/\r/g, "")                         // Carriage returns
-    .replace(/\x07/g, "");                      // Bell
-}
-
-interface TerminalSession {
-  ptyProcess: pty.IPty;
-  clients: Set<WebSocket>;
-  killTimer: ReturnType<typeof setTimeout> | null;
-  // Output bridging to chat
-  outputBuffer: string;
-  settleTimer: ReturnType<typeof setTimeout> | null;
-  isStreaming: boolean;
-}
-const terminalSessions = new Map<string, TerminalSession>();
+// ============ Terminal WSS — connects to agent's existing PTY ============
 
 terminalWss.on("connection", (socket: WebSocket, req: http.IncomingMessage) => {
   const urlParts = req.url?.split("/") ?? [];
@@ -586,91 +1150,33 @@ terminalWss.on("connection", (socket: WebSocket, req: http.IncomingMessage) => {
     return;
   }
 
-  // Reuse existing terminal session if one exists (e.g. user switched tabs and came back)
-  let session = terminalSessions.get(agentId);
-
-  if (session) {
-    // Cancel any pending kill timer
-    if (session.killTimer) {
-      clearTimeout(session.killTimer);
-      session.killTimer = null;
-    }
-    session.clients.add(socket);
-    // eslint-disable-next-line no-console
-    console.log(`[terminal:${agentId}] Client reconnected (${session.clients.size} clients)`);
-  } else {
-    // Spawn a new interactive CLI session in the agent's working directory
-    const cwd = agent.workingDirectory || process.cwd();
-    const cliType = agent.cliType;
-
-    let shellCmd: string;
-    if (cliType === "claude-code") {
-      shellCmd = "claude --continue --dangerously-skip-permissions";
-    } else if (cliType === "copilot-cli") {
-      shellCmd = "copilot --continue";
-    } else {
-      shellCmd = process.env.SHELL || "/bin/bash";
-    }
-
-    // Clean env: strip CLAUDECODE so claude can launch
-    const cleanEnv = { ...process.env };
-    delete cleanEnv.CLAUDECODE;
-
-    let ptyProcess: pty.IPty;
-    try {
-      ptyProcess = pty.spawn(process.env.SHELL || "/bin/bash", ["-l", "-c", shellCmd], {
-        name: "xterm-256color",
-        cols: 80,
-        rows: 24,
-        cwd,
-        env: cleanEnv as Record<string, string>,
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(`[terminal:${agentId}] Failed to spawn:`, err);
-      socket.send(JSON.stringify({ type: "error", data: `Failed to spawn terminal: ${err}` }));
-      socket.close(1011, "PTY spawn failed");
-      return;
-    }
-
-    // eslint-disable-next-line no-console
-    console.log(`[terminal:${agentId}] Spawned interactive ${cliType || "shell"} (pid: ${ptyProcess.pid}) in ${cwd}`);
-
-    session = { ptyProcess, clients: new Set([socket]), killTimer: null };
-    terminalSessions.set(agentId, session);
-
-    // Pipe PTY output to all connected clients
-    ptyProcess.onData((data: string) => {
-      const msg = JSON.stringify({ type: "output", data });
-      for (const client of session!.clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(msg);
-        }
-      }
-    });
-
-    ptyProcess.onExit(({ exitCode }) => {
-      // eslint-disable-next-line no-console
-      console.log(`[terminal:${agentId}] PTY exited with code ${exitCode}`);
-      const exitMsg = JSON.stringify({ type: "exit", code: exitCode });
-      for (const client of session!.clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(exitMsg);
-        }
-      }
-      terminalSessions.delete(agentId);
-    });
+  // Get or lazily create the PTY session
+  const session = ensureAgentPty(agentId);
+  if (!session) {
+    socket.send(JSON.stringify({ type: "error", data: "Failed to create terminal session. Check that the working directory exists." }));
+    socket.close(1011, "PTY spawn failed");
+    return;
   }
 
-  // Handle messages from this client
-  const currentSession = session;
+  // Add client
+  session.clients.add(socket);
+  // eslint-disable-next-line no-console
+  console.log(`[terminal:${agentId}] Client connected (${session.clients.size} clients)`);
+
+  // Send scrollback for catch-up
+  if (session.scrollback.length > 0) {
+    const catchup = JSON.stringify({ type: "output", data: session.scrollback.join("") });
+    socket.send(catchup);
+  }
+
+  // Handle input/resize from this client
   socket.on("message", (rawData) => {
     try {
       const msg = JSON.parse(rawData.toString());
       if (msg.type === "input" && typeof msg.data === "string") {
-        currentSession.ptyProcess.write(msg.data);
+        session.ptyProcess.write(msg.data);
       } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-        currentSession.ptyProcess.resize(msg.cols, msg.rows);
+        session.ptyProcess.resize(msg.cols, msg.rows);
       }
     } catch {
       // Ignore
@@ -678,19 +1184,10 @@ terminalWss.on("connection", (socket: WebSocket, req: http.IncomingMessage) => {
   });
 
   socket.on("close", () => {
-    currentSession.clients.delete(socket);
+    session.clients.delete(socket);
     // eslint-disable-next-line no-console
-    console.log(`[terminal:${agentId}] Client disconnected (${currentSession.clients.size} remaining)`);
-
-    // If no clients remain, start a kill timer
-    if (currentSession.clients.size === 0) {
-      currentSession.killTimer = setTimeout(() => {
-        // eslint-disable-next-line no-console
-        console.log(`[terminal:${agentId}] No clients for 10s, killing PTY`);
-        try { currentSession.ptyProcess.kill(); } catch {}
-        terminalSessions.delete(agentId);
-      }, 10_000);
-    }
+    console.log(`[terminal:${agentId}] Client disconnected (${session.clients.size} remaining)`);
+    // No kill timer — PTY lives as long as the agent exists
   });
 });
 
