@@ -57,7 +57,17 @@ officeagent demo                         # Auto-detect CLIs, full demo
 
 **From the terminal:**
 ```bash
+# Claude agent in current directory
+officeagent spawn
+
+# Named Copilot agent working on your project
 officeagent spawn --name "Alice" --dir ~/projects/myapp --cli copilot
+
+# Give them a personality
+officeagent spawn -n "Grumpy Gary" -p "Sarcastic senior dev who's seen it all"
+
+# Resume a previous conversation
+officeagent spawn -n "Alice" -d ~/projects/myapp --continue
 ```
 
 ## Controls
