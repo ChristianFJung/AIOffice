@@ -78,7 +78,7 @@ officeagent spawn -n "Alice" -d ~/projects/myapp --continue
 | Key | Action |
 |-----|--------|
 | `WASD` / `Arrows` | Move around |
-| `E` / `Enter` | Chat with nearby agent |
+| `E` | Chat with nearby agent |
 | `Esc` / `Space` | Close panel |
 | `Tab` | Switch Chat ↔ Terminal |
 
