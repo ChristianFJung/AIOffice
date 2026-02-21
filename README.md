@@ -19,7 +19,7 @@ https://github.com/user-attachments/assets/8083f778-1ab3-4c74-b1f4-34611d50191d
 git clone https://github.com/ChristianFJung/AIOffice
 cd AIOffice
 npm i
-officeagent demo
+npx officeagent demo
 ```
 
 <img src="demo/demo.gif" alt="officeagent demo — CLI detection and agent spawning" width="600">
@@ -46,10 +46,10 @@ See [Architecture →](docs/ARCHITECTURE.md)
 ## CLI
 
 ```bash
-officeagent start                        # Launch the office
-officeagent spawn                        # Add a Claude agent
-officeagent spawn -n "Bob" -c copilot    # Named Copilot agent
-officeagent demo                         # Auto-detect CLIs, full demo
+npx officeagent start                        # Launch the office
+npx officeagent spawn                        # Add a Claude agent
+npx officeagent spawn -n "Bob" -c copilot    # Named Copilot agent
+npx officeagent demo                         # Auto-detect CLIs, full demo
 ```
 
 ## Adding Agents
@@ -61,16 +61,16 @@ officeagent demo                         # Auto-detect CLIs, full demo
 **From the terminal:**
 ```bash
 # Claude agent in current directory
-officeagent spawn
+npx officeagent spawn
 
 # Named Copilot agent working on your project
-officeagent spawn --name "Alice" --dir ~/projects/myapp --cli copilot
+npx officeagent spawn --name "Alice" --dir ~/projects/myapp --cli copilot
 
 # Give them a personality
-officeagent spawn -n "Grumpy Gary" -p "Sarcastic senior dev who's seen it all"
+npx officeagent spawn -n "Grumpy Gary" -p "Sarcastic senior dev who's seen it all"
 
 # Resume a previous conversation
-officeagent spawn -n "Alice" -d ~/projects/myapp --continue
+npx officeagent spawn -n "Alice" -d ~/projects/myapp --continue
 ```
 
 ## Controls
@@ -124,9 +124,9 @@ aioffice/
 Launch the server and web app.
 
 ```bash
-officeagent start              # Start both server (:3003) and web (:3000)
-officeagent start --server-only  # Server only
-officeagent start --web-only     # Web app only
+npx officeagent start              # Start both server (:3003) and web (:3000)
+npx officeagent start --server-only  # Server only
+npx officeagent start --web-only     # Web app only
 ```
 
 ### `officeagent spawn`
@@ -134,11 +134,11 @@ officeagent start --web-only     # Web app only
 Spawn an AI agent into the office.
 
 ```bash
-officeagent spawn                                          # Claude agent, random name
-officeagent spawn --name "Alice" --cli copilot             # Named Copilot agent
-officeagent spawn -n "Bob" -d ~/projects/myapp             # Custom working directory
-officeagent spawn -n "Grumpy" -p "Sarcastic senior dev"    # With personality
-officeagent spawn --continue                               # Resume previous conversation
+npx officeagent spawn                                          # Claude agent, random name
+npx officeagent spawn --name "Alice" --cli copilot             # Named Copilot agent
+npx officeagent spawn -n "Bob" -d ~/projects/myapp             # Custom working directory
+npx officeagent spawn -n "Grumpy" -p "Sarcastic senior dev"    # With personality
+npx officeagent spawn --continue                               # Resume previous conversation
 ```
 
 | Flag | Short | Description | Default |
@@ -155,7 +155,7 @@ officeagent spawn --continue                               # Resume previous con
 One command to see everything. Detects which AI CLIs you have installed and spawns agents into demo projects.
 
 ```bash
-officeagent demo    # Auto-detect CLIs, start world, spawn agents
+npx officeagent demo    # Auto-detect CLIs, start world, spawn agents
 ```
 
 | You have installed | What happens |
