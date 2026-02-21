@@ -332,6 +332,8 @@ function processJsonlLine(agentId: string, obj: any) {
   // Detect user messages (terminal-originated input sets "thinking")
   if (obj.type === "user" && !session.isBusy) {
     session.isBusy = true;
+    // Safety: force unlock after 60s
+    setTimeout(() => { if (session.isBusy) { session.isBusy = false; } }, 60000);
 
     // Extract user text and post as chat message so it appears in chat view
     // Skip if this message was already posted via chat UI (bridgeChatToPty)
@@ -535,6 +537,8 @@ function processCopilotJsonlLine(agentId: string, obj: any) {
   if (obj.type === "user.message") {
     if (!session.isBusy) {
       session.isBusy = true;
+      // Safety: force unlock after 60s
+      setTimeout(() => { if (session.isBusy) { session.isBusy = false; } }, 60000);
       // Post user text to chat (skip if from bridgeChatToPty)
       const userText = obj.data?.content;
       if (userText && typeof userText === "string" && (!session.lastChatMessage || !userText.includes(session.lastChatMessage))) {
@@ -754,11 +758,23 @@ function bridgeChatToPty(agentId: string, text: string) {
 
   // Write text first, then submit after a delay.
   // Claude Code's TUI (Ink) needs Enter (\r) to submit.
-  // Copilot CLI's TUI needs Enter (\r) to submit — it handles
-  // the input buffer differently, so we clear and re-write for reliability.
-  session.ptyProcess.write(prompt);
-  setTimeout(() => session.ptyProcess.write("\r"), 500);
+  // Copilot CLI's TUI can get stuck after multiple programmatic writes.
+  // Send Ctrl+U (kill line) first to clear any stale input buffer,
+  // then write the prompt and submit with \r.
+  session.ptyProcess.write("\x15"); // Ctrl+U: clear input line
+  setTimeout(() => {
+    session.ptyProcess.write(prompt);
+    setTimeout(() => session.ptyProcess.write("\r"), 500);
+  }, 100);
   session.isBusy = true;
+
+  // Safety: force isBusy = false after 60s to prevent permanent lock
+  setTimeout(() => {
+    if (session.isBusy) {
+      console.log(`[chat→pty:${agentId}] Busy timeout — forcing unlock`);
+      session.isBusy = false;
+    }
+  }, 60000);
 
   // Post "thinking" status immediately
   const thinkingEvent: EventEnvelope = {
