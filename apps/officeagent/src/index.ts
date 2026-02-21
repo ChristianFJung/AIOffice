@@ -163,8 +163,9 @@ Examples:
 function detectCLIs(): { hasClaude: boolean; hasCopilot: boolean } {
   let hasClaude = false;
   let hasCopilot = false;
-  try { execSync("which claude", { stdio: "ignore" }); hasClaude = true; } catch {}
-  try { execSync("which copilot", { stdio: "ignore" }); hasCopilot = true; } catch {}
+  const cmd = process.platform === "win32" ? "where" : "which";
+  try { execSync(`${cmd} claude`, { stdio: "ignore" }); hasClaude = true; } catch {}
+  try { execSync(`${cmd} copilot`, { stdio: "ignore" }); hasCopilot = true; } catch {}
   return { hasClaude, hasCopilot };
 }
 
