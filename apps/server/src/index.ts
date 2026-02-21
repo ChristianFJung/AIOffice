@@ -605,9 +605,15 @@ function createAgentPty(
   const cleanEnv = { ...process.env };
   delete cleanEnv.CLAUDECODE;
 
+  const isWin = process.platform === "win32";
+  const shell = isWin
+    ? process.env.COMSPEC || "cmd.exe"
+    : process.env.SHELL || "/bin/bash";
+  const shellArgs = isWin ? ["/c", shellCmd] : ["-l", "-c", shellCmd];
+
   let ptyProcess: pty.IPty;
   try {
-    ptyProcess = pty.spawn(process.env.SHELL || "/bin/bash", ["-l", "-c", shellCmd], {
+    ptyProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
       cols: 120,
       rows: 40,
