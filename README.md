@@ -22,6 +22,8 @@ npm i
 npx officeagent demo
 ```
 
+> **Windows users:** Run in [Git Bash](https://git-scm.com/) or [WSL](https://learn.microsoft.com/en-us/windows/wsl/install), not PowerShell.
+
 <img src="demo/demo.gif" alt="officeagent demo — CLI detection and agent spawning" width="600">
 
 > Open **http://localhost:3000** — your office is ready. Walk around, assign tasks, be the boss.
