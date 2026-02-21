@@ -1013,7 +1013,13 @@ app.post("/agents/spawn", (req, res) => {
     return;
   }
 
-  const { cliType, workingDirectory, personality, continueConversation } = parsed.data;
+  const { cliType, personality, continueConversation } = parsed.data;
+  // Translate Windows paths to WSL paths (e.g. C:\Users\... → /mnt/c/Users/...)
+  let workingDirectory = parsed.data.workingDirectory;
+  if (process.platform === "linux" && workingDirectory && /^[A-Za-z]:\\/.test(workingDirectory)) {
+    const drive = workingDirectory[0].toLowerCase();
+    workingDirectory = `/mnt/${drive}/${workingDirectory.slice(3).replace(/\\/g, "/")}`;
+  }
   const name = parsed.data.name?.trim() || randomAgentName();
   const agentId = `agent-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
   const desk = randomDesk();
