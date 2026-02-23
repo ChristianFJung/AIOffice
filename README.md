@@ -39,6 +39,10 @@ npx officeagent demo
 - ⌨️ **CLI tool** — script your whole team from the terminal
 - 🔒 **100% local** — Runs Claude Code or Copilot CLI on your machine
 
+## Why?
+
+I started running multiple AI coding agents in parallel and quickly hit a wall — terminal tabs don't scale past 3. I needed a way to see all my agents at once, remember who's doing what, and manage them without losing my mind. So I built an office for them.
+
 ## How It Works
 
  Each agent is a real CLI process (Claude Code or Copilot CLI) running in a PTY on your computer. The server watches JSONL output for responses, bridges messages over WebSocket, and Phaser renders it all as a cozy pixel-art office. Your existing CLI auth handles everything.
