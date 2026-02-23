@@ -21,3 +21,11 @@ try {
 } catch (e) {
   // Symlinks may require admin on Windows — not fatal
 }
+
+// Fix node-pty spawn-helper permissions (npm sometimes strips +x)
+if (!isWin) {
+  const { execSync } = require('child_process');
+  try {
+    execSync('chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true');
+  } catch (e) {}
+}
